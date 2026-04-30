@@ -1,0 +1,90 @@
+name: Shri
+target_role: ML Architect
+current_level: transitioning_intermediate
+learning_goal: >
+  Become interview-ready and system-ready for ML Architect roles by building
+  strong fundamentals, architecture-level reasoning, production ML judgment,
+  and clear explanation skills.
+
+time_budget_hours_per_week: 12
+
+focus_areas:
+  - machine_learning_fundamentals
+  - supervised_learning
+  - unsupervised_learning
+  - evaluation_and_metrics
+  - feature_engineering
+  - deep_learning
+  - reinforcement_learning
+  - mlops_and_monitoring
+  - system_design
+  - architecture_tradeoffs
+
+learning_scope:
+  include_later:
+    - neural_networks
+    - representation_learning
+    - sequence_models
+    - transformers
+    - recommendation_systems_ml
+    - time_series
+    - anomaly_detection
+    - causal_ml
+
+priority_contexts:
+  - manufacturing_ai
+  - predictive_quality
+  - recommendation_systems
+  - rag_systems
+  - ml_monitoring
+  - agentic_ai_systems
+
+strengths:
+  - solution_architecture_thinking
+  - business_context_understanding
+  - stakeholder_translation
+  - system_level_reasoning
+  - delivery_experience
+
+known_gaps:
+  - deep_ml_foundations
+  - metrics_selection_depth
+  - model_behavior_edge_cases
+  - hands_on_ml_system_design_depth
+  - production_ml_failure_pattern_mastery
+
+explanation_preferences:
+  style: simple_precise
+  avoid:
+    - textbook_language
+    - excessive_jargon
+    - long_theoretical_detours
+  prefer:
+    - intuition_first
+    - tiny_examples
+    - practical_relevance
+    - architect_view
+    - interview_framing
+
+assessment_preferences:
+  question_types:
+    - concept
+    - scenario
+    - architect_reasoning
+    - teachback
+  mcq_allowed: false
+  answer_style: short_written
+
+progression_rules:
+  require_prerequisite_mastery: true
+  allow_borderline_progression: true
+  revisit_weak_topics: true
+  architect_lens_required: true
+
+output_preferences:
+  save_concept_note: true
+  save_architect_note: true
+  save_assessment: true
+  save_user_answers: true
+  save_evaluation: true
+  save_refined_note: true

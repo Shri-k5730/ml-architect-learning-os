@@ -1,0 +1,203 @@
+[
+  {
+    "topic_id": "mlf_001",
+    "title": "What machine learning is actually learning",
+    "domain": "machine_learning_fundamentals",
+    "difficulty": 1,
+    "prerequisites": [],
+    "architect_relevance": [
+      "generalization",
+      "data_dependency",
+      "model_risk"
+    ],
+    "tags": [
+      "learning",
+      "patterns",
+      "prediction",
+      "generalization"
+    ]
+  },
+  {
+    "topic_id": "mlf_002",
+    "title": "Features vs labels",
+    "domain": "machine_learning_fundamentals",
+    "difficulty": 1,
+    "prerequisites": [
+      "mlf_001"
+    ],
+    "architect_relevance": [
+      "data_contracts",
+      "feature_quality",
+      "label_definition"
+    ],
+    "tags": [
+      "features",
+      "labels",
+      "supervised_learning",
+      "data_design"
+    ]
+  },
+  {
+    "topic_id": "mlf_003",
+    "title": "Training data vs test data",
+    "domain": "machine_learning_fundamentals",
+    "difficulty": 1,
+    "prerequisites": [
+      "mlf_001",
+      "mlf_002"
+    ],
+    "architect_relevance": [
+      "evaluation_discipline",
+      "data_split_strategy",
+      "deployment_readiness"
+    ],
+    "tags": [
+      "train_test_split",
+      "evaluation",
+      "generalization",
+      "validation"
+    ]
+  },
+  {
+    "topic_id": "mlf_004",
+    "title": "What a baseline really is",
+    "domain": "machine_learning_fundamentals",
+    "difficulty": 1,
+    "prerequisites": [
+      "mlf_003"
+    ],
+    "architect_relevance": [
+      "benchmarking",
+      "solution_justification",
+      "cost_vs_complexity"
+    ],
+    "tags": [
+      "baseline",
+      "benchmark",
+      "model_comparison",
+      "decision_quality"
+    ]
+  },
+  {
+    "topic_id": "mlf_005",
+    "title": "Generalization",
+    "domain": "machine_learning_fundamentals",
+    "difficulty": 2,
+    "prerequisites": [
+      "mlf_003"
+    ],
+    "architect_relevance": [
+      "production_reliability",
+      "distribution_shift",
+      "model_confidence"
+    ],
+    "tags": [
+      "generalization",
+      "unseen_data",
+      "robustness",
+      "reliability"
+    ]
+  },
+  {
+    "topic_id": "mlf_006",
+    "title": "Overfitting vs underfitting",
+    "domain": "machine_learning_fundamentals",
+    "difficulty": 2,
+    "prerequisites": [
+      "mlf_005"
+    ],
+    "architect_relevance": [
+      "model_selection",
+      "capacity_control",
+      "error_diagnosis"
+    ],
+    "tags": [
+      "overfitting",
+      "underfitting",
+      "bias_variance",
+      "model_behavior"
+    ]
+  },
+  {
+    "topic_id": "mlf_007",
+    "title": "Data leakage",
+    "domain": "machine_learning_fundamentals",
+    "difficulty": 2,
+    "prerequisites": [
+      "mlf_003",
+      "mlf_005"
+    ],
+    "architect_relevance": [
+      "evaluation_failure",
+      "feature_pipeline_design",
+      "governance_risk"
+    ],
+    "tags": [
+      "data_leakage",
+      "leakage",
+      "invalid_evaluation",
+      "pipeline_risk"
+    ]
+  },
+  {
+    "topic_id": "mlf_008",
+    "title": "Bias vs variance",
+    "domain": "evaluation_and_metrics",
+    "difficulty": 2,
+    "prerequisites": [
+      "mlf_006"
+    ],
+    "architect_relevance": [
+      "model_tradeoffs",
+      "capacity_tuning",
+      "error_pattern_analysis"
+    ],
+    "tags": [
+      "bias",
+      "variance",
+      "tradeoff",
+      "error_analysis"
+    ]
+  },
+  {
+    "topic_id": "mlf_009",
+    "title": "Why accuracy can lie",
+    "domain": "evaluation_and_metrics",
+    "difficulty": 2,
+    "prerequisites": [
+      "mlf_004",
+      "mlf_003"
+    ],
+    "architect_relevance": [
+      "metric_selection",
+      "business_alignment",
+      "false_confidence"
+    ],
+    "tags": [
+      "accuracy",
+      "metrics",
+      "class_imbalance",
+      "evaluation_risk"
+    ]
+  },
+  {
+    "topic_id": "mlf_010",
+    "title": "Precision vs recall",
+    "domain": "evaluation_and_metrics",
+    "difficulty": 2,
+    "prerequisites": [
+      "mlf_009"
+    ],
+    "architect_relevance": [
+      "threshold_design",
+      "cost_of_errors",
+      "stakeholder_tradeoffs"
+    ],
+    "tags": [
+      "precision",
+      "recall",
+      "false_positives",
+      "false_negatives"
+    ]
+  }
+]

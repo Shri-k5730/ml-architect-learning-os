@@ -1,0 +1,43 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+runs/*
+!runs/.gitkeep
+notes/concepts/*
+!notes/concepts/.gitkeep
+notes/architect_lens/*
+!notes/architect_lens/.gitkeep
+notes/refined/*
+!notes/refined/.gitkeep
+assessments/questions/*
+!assessments/questions/.gitkeep
+assessments/answers/*
+!assessments/answers/.gitkeep
+assessments/evaluations/*
+!assessments/evaluations/.gitkeep
+.env
+__pycache__/
+*.pyc
+runs/
+notes/
+assessments/answers/
+assessments/evaluations/
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime artifacts
+runs/
+data/rewards_state.json
+
+# Optional generated learning artifacts
+# Keep these if you want your learning proof in GitHub.
+# Ignore them if you want the public repo to be clean source-only.
+# notes/
+# assessments/answers/
+# assessments/evaluations/

@@ -1,0 +1,55 @@
+{
+  "default_rule": {
+    "all_prerequisites_must_be_passed": true,
+    "allow_borderline_as_pass": false,
+    "allow_manual_override": true
+  },
+  "selection_priority": [
+    "retry_failed_topic",
+    "recover_prerequisite_gap",
+    "next_unlocked_topic"
+  ],
+  "retry_rules": {
+    "revise_retries_before_prereq_fallback": 2,
+    "borderline_can_progress_once": true,
+    "borderline_requires_weak_spot_logging": true
+  },
+  "unlock_logic": {
+    "pass": "unlock_dependents",
+    "borderline": "unlock_next_only_if_no_strict_dependency_risk",
+    "revise": "lock_next_and_retry_same_topic",
+    "fail_prereq": "route_to_missing_prerequisite"
+  },
+  "topic_specific_overrides": {
+    "mlf_001": {
+      "always_available": true
+    },
+    "mlf_002": {
+      "requires": ["mlf_001"]
+    },
+    "mlf_003": {
+      "requires": ["mlf_001", "mlf_002"]
+    },
+    "mlf_004": {
+      "requires": ["mlf_003"]
+    },
+    "mlf_005": {
+      "requires": ["mlf_003"]
+    },
+    "mlf_006": {
+      "requires": ["mlf_005"]
+    },
+    "mlf_007": {
+      "requires": ["mlf_003", "mlf_005"]
+    },
+    "mlf_008": {
+      "requires": ["mlf_006"]
+    },
+    "mlf_009": {
+      "requires": ["mlf_003", "mlf_004"]
+    },
+    "mlf_010": {
+      "requires": ["mlf_009"]
+    }
+  }
+}

@@ -1,0 +1,61 @@
+dimensions:
+  conceptual_clarity:
+    min: 1
+    max: 5
+    description: Understands the concept correctly in simple words without major confusion
+
+  practical_reasoning:
+    min: 1
+    max: 5
+    description: Can connect the concept to real ML usage and consequences
+
+  architect_reasoning:
+    min: 1
+    max: 5
+    description: Can explain the system, design, monitoring, or deployment relevance of the concept
+
+  communication:
+    min: 1
+    max: 5
+    description: Can explain clearly, directly, and without hiding behind vague language
+
+thresholds:
+  pass_overall: 14
+  borderline_overall: 11
+  must_have_minimum:
+    conceptual_clarity: 3
+    architect_reasoning: 3
+
+decision_rules:
+  pass:
+    conditions:
+      - overall_score >= pass_overall
+      - conceptual_clarity >= 3
+      - architect_reasoning >= 3
+    next_action: next_topic
+
+  borderline:
+    conditions:
+      - overall_score >= borderline_overall
+      - conceptual_clarity >= 3
+      - architect_reasoning < 3
+    next_action: reinforce_and_continue
+
+  revise:
+    conditions:
+      - conceptual_clarity < 3
+      - or practical_reasoning < 3
+    next_action: retry_same_topic
+
+  fail_prereq:
+    conditions:
+      - repeated_confusion_on_prerequisite: true
+    next_action: go_to_prerequisite
+
+feedback_rules:
+  strengths_limit: 3
+  weak_spots_limit: 3
+  require_evidence_from_answers: true
+  allow_polite_padding: false
+  refine_explanation_on_revise: true
+  refine_architect_summary_on_revise: true
