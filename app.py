@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -11,8 +13,6 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 
 from src.utils.rewards import get_topic_reward_state, load_rewards_state
-import hashlib
-import hmac
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -61,12 +61,6 @@ def load_run_history() -> List[Dict[str, Any]]:
     return rows
 
 
-def load_topic_catalog() -> List[Dict[str, Any]]:
-    topic_catalog_path = TOPICS_DIR / "topic_catalog.json"
-    if not topic_catalog_path.exists():
-        return []
-    return json.loads(topic_catalog_path.read_text(encoding="utf-8"))
-
 def get_secret_value(key: str, default: Any = None) -> Any:
     try:
         return st.secrets.get(key, default)
@@ -74,18 +68,19 @@ def get_secret_value(key: str, default: Any = None) -> Any:
         return default
 
 
+# -----------------------------
+# Auth
+# -----------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
 def require_login() -> None:
     auth_enabled = bool(get_secret_value("APP_AUTH_ENABLED", True))
-
     if not auth_enabled:
         return
 
     expected_hash = str(get_secret_value("APP_PASSWORD_HASH", "")).strip()
-
     if not expected_hash:
         st.error("Security misconfiguration: APP_PASSWORD_HASH is missing.")
         st.stop()
@@ -105,7 +100,6 @@ def require_login() -> None:
     st.caption("Enter the app password to continue.")
 
     password = st.text_input("Password", type="password")
-
     if st.button("Unlock"):
         provided_hash = hash_password(password)
         if hmac.compare_digest(provided_hash, expected_hash):
@@ -116,13 +110,15 @@ def require_login() -> None:
 
     st.stop()
 
+
+# -----------------------------
+# Theme
+# -----------------------------
 def inject_theme() -> None:
     st.markdown(
         """
         <style>
-        html {
-            scroll-behavior: smooth;
-        }
+        html { scroll-behavior: smooth; }
 
         body {
             background:
@@ -170,14 +166,8 @@ def inject_theme() -> None:
             backdrop-filter: blur(14px);
         }
 
-        div[data-testid="stMetric"] label {
-            color: #94a3b8 !important;
-        }
-
-        div[data-testid="stMetricValue"] {
-            color: #f8fafc !important;
-            font-weight: 800;
-        }
+        div[data-testid="stMetric"] label { color: #94a3b8 !important; }
+        div[data-testid="stMetricValue"] { color: #f8fafc !important; font-weight: 800; }
 
         .stButton > button {
             border-radius: 14px;
@@ -229,15 +219,6 @@ def inject_theme() -> None:
         div[data-testid="stTextArea"] textarea:focus {
             border-color: rgba(124, 58, 237, 0.8);
             box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.18);
-        }
-
-        .glass-panel {
-            background: rgba(15, 23, 42, 0.72);
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            border-radius: 22px;
-            padding: 1.15rem;
-            box-shadow: 0 22px 60px rgba(0, 0, 0, 0.28);
-            backdrop-filter: blur(16px);
         }
 
         .level-card {
@@ -307,17 +288,13 @@ def inject_theme() -> None:
             font-weight: 650;
         }
 
-        .stAlert {
-            border-radius: 18px;
-        }
-
-        hr {
-            border-color: rgba(148, 163, 184, 0.16);
-        }
+        .stAlert { border-radius: 18px; }
+        hr { border-color: rgba(148, 163, 184, 0.16); }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
 
 # -----------------------------
 # Run discovery
@@ -484,10 +461,7 @@ def compute_overall_metrics(progress_rows: List[Dict[str, str]]) -> Dict[str, An
     }
 
 
-def compute_display_stars(
-    row: Dict[str, str],
-    rewards_state: Dict[str, Any],
-) -> str:
+def compute_display_stars(row: Dict[str, str], rewards_state: Dict[str, Any]) -> str:
     topic_reward = get_topic_reward_state(rewards_state, row["topic_id"])
     best_stars = topic_reward.get("best_stars")
     if isinstance(best_stars, int) and best_stars > 0:
@@ -497,10 +471,7 @@ def compute_display_stars(
     return star_string(avg_score)
 
 
-def badge_label_for_topic(
-    row: Dict[str, str],
-    rewards_state: Dict[str, Any],
-) -> str:
+def badge_label_for_topic(row: Dict[str, str], rewards_state: Dict[str, Any]) -> str:
     topic_reward = get_topic_reward_state(rewards_state, row["topic_id"])
     last_badges = topic_reward.get("last_badges", [])
 
@@ -533,14 +504,6 @@ def find_note_file(folder: Path, topic_id: str) -> Optional[Path]:
     candidates = sorted(folder.glob(f"{topic_id}*"))
     return candidates[0] if candidates else None
 
-def increment_guard_counter(counter_name: str, max_allowed: int) -> bool:
-    current = int(st.session_state.get(counter_name, 0))
-
-    if current >= max_allowed:
-        return False
-
-    st.session_state[counter_name] = current + 1
-    return True
 
 # -----------------------------
 # UI render helpers
@@ -580,6 +543,7 @@ def render_level_card(
         """,
         unsafe_allow_html=True,
     )
+
 
 def render_latest_evaluation_panel() -> None:
     eval_run = get_latest_evaluation_run()
@@ -658,9 +622,8 @@ def is_playable_status(status: str) -> bool:
 # Streamlit page
 # -----------------------------
 st.set_page_config(page_title="ML Architect Learning OS", layout="wide")
-require_login()
 inject_theme()
-
+require_login()
 
 st.markdown('<div class="main-title">ML Architect Learning OS</div>', unsafe_allow_html=True)
 st.markdown(
@@ -689,17 +652,9 @@ top_c6.metric("Badges", len(rewards_state.get("badges_unlocked", [])))
 
 if awaiting_run is not None:
     active_state = load_json(awaiting_run / "run_state.json")
-    st.warning(
-        f"Active lesson in progress . {active_state['topic_id']} . Finish active lesson first."
-    )
+    st.warning(f"Active lesson in progress . {active_state['topic_id']} . Finish active lesson first.")
 
 action_c1, action_c2 = st.columns([1, 1])
-
-#prevent session level abuse
-max_starts = int(get_secret_value("MAX_LESSON_STARTS_PER_SESSION", 5))
-if not increment_guard_counter("lesson_starts_used", max_starts):
-    st.error("Session lesson-start limit reached. Restart session or increase the configured limit.")
-    st.stop()
 
 with action_c1:
     if st.button(
@@ -748,12 +703,6 @@ tabs = st.tabs(
 # -----------------------------
 # HOME TAB
 # -----------------------------
-
-max_starts = int(get_secret_value("MAX_LESSON_STARTS_PER_SESSION", 5))
-if not increment_guard_counter("lesson_starts_used", max_starts):
-    st.error("Session lesson-start limit reached. Restart session or increase the configured limit.")
-    st.stop()
-
 with tabs[0]:
     st.subheader("Level Map")
 
@@ -796,12 +745,6 @@ with tabs[0]:
 # -----------------------------
 # CURRENT LEVEL TAB
 # -----------------------------
-
-max_evals = int(get_secret_value("MAX_EVALUATIONS_PER_SESSION", 10))
-if not increment_guard_counter("evaluations_used", max_evals):
-    st.error("Session evaluation limit reached. Restart session or increase the configured limit.")
-    st.stop()
-
 with tabs[1]:
     if awaiting_run is None:
         st.info("No active lesson. Start or replay a level from Home.")
