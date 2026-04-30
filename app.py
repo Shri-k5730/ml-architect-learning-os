@@ -516,6 +516,47 @@ def render_score_cards(evaluation: Dict[str, Any]) -> None:
     c3.metric("Architect", scores.get("architect_reasoning", "-"))
     c4.metric("Communication", scores.get("communication", "-"))
 
+def render_answer_coaching_panel(run_dir: Path) -> None:
+    coaching_path = run_dir / "answer_coaching.json"
+
+    if not coaching_path.exists():
+        st.info("No question-level answer coaching found for this run. Re-evaluate a lesson to generate it.")
+        return
+
+    answer_coaching = load_json(coaching_path)
+    coaching_items = answer_coaching.get("coaching", [])
+
+    if not coaching_items:
+        st.info("No answer coaching entries found.")
+        return
+
+    st.markdown("### Better Answers by Question")
+
+    for item in coaching_items:
+        qid = item.get("question_id", "")
+        question = item.get("question", "")
+        quality = item.get("answer_quality", "partial")
+
+        with st.expander(f"{qid} . {quality.upper()} . {question}", expanded=False):
+            st.markdown("**Your Answer**")
+            st.write(item.get("your_answer", ""))
+
+            st.markdown("**What Was Missing**")
+            missing_items = item.get("what_was_missing", [])
+            if missing_items:
+                for missing in missing_items:
+                    st.markdown(f"- {missing}")
+            else:
+                st.write("-")
+
+            st.markdown("**Better Answer**")
+            st.success(item.get("better_answer", ""))
+
+            st.markdown("**Why This Is Better**")
+            st.write(item.get("why_this_is_better", ""))
+
+            st.markdown("**Architect Upgrade**")
+            st.info(item.get("architect_upgrade", ""))
 
 def render_level_card(
     row: Dict[str, str],
@@ -592,6 +633,8 @@ def render_latest_evaluation_panel() -> None:
         st.markdown("**Weak Spots**")
         for item in evaluation.get("weak_spots", []):
             st.markdown(f"- {item}")
+
+    render_answer_coaching_panel(eval_run)
 
     st.markdown("**Decision Reason**")
     st.write(evaluation.get("decision_reason", ""))
@@ -852,6 +895,8 @@ with tabs[1]:
                     st.code(output)
                     st.rerun()
 
+
+
 # -----------------------------
 # LAST EVALUATION TAB
 # -----------------------------
@@ -861,6 +906,7 @@ with tabs[2]:
         st.info("No completed evaluation yet.")
     else:
         render_latest_evaluation_panel()
+
 
 # -----------------------------
 # TRAJECTORY TAB
@@ -920,8 +966,9 @@ with tabs[4]:
         architect_file = find_note_file(NOTES_DIR / "architect_lens", selected_topic_id)
         refined_file = find_note_file(NOTES_DIR / "refined", selected_topic_id)
         eval_file = find_note_file(ASSESSMENTS_DIR / "evaluations", selected_topic_id)
+        coaching_file = find_note_file(ASSESSMENTS_DIR / "evaluations", f"{selected_topic_id}_answer_coaching")
 
-        sub_tabs = st.tabs(["Concept", "Architect", "Refined", "Evaluation"])
+        sub_tabs = st.tabs(["Concept", "Architect", "Refined", "Evaluation", "Answer Coaching"])
 
         with sub_tabs[0]:
             if concept_file:
@@ -946,6 +993,12 @@ with tabs[4]:
                 st.markdown(load_text(eval_file))
             else:
                 st.info("No evaluation note found.")
+        
+        with sub_tabs[4]:
+            if coaching_file:
+                st.markdown(load_text(coaching_file))
+            else:
+                st.info("No answer coaching note found.")
 
 # -----------------------------
 # REWARDS TAB

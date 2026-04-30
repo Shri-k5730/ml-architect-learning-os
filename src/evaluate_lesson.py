@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from src.agents.answer_coach import generate_answer_coaching
 
 import yaml
 
@@ -137,6 +138,43 @@ def load_user_answers(answer_json_path: Path) -> List[UserAnswer]:
 
     return user_answers
 
+def answer_coaching_to_markdown(answer_coaching: Dict[str, Any]) -> str:
+    lines = [
+        f"---",
+        f"topic_id: {answer_coaching.get('topic_id', '')}",
+        f"---",
+        "",
+        "# Answer Coaching",
+        "",
+    ]
+
+    for item in answer_coaching.get("coaching", []):
+        lines.append(f"## {item.get('question_id', '')}")
+        lines.append("")
+        lines.append(f"**Question:** {item.get('question', '')}")
+        lines.append("")
+        lines.append("**Your Answer:**")
+        lines.append("")
+        lines.append(item.get("your_answer", ""))
+        lines.append("")
+        lines.append("**What Was Missing:**")
+        for missing in item.get("what_was_missing", []):
+            lines.append(f"- {missing}")
+        lines.append("")
+        lines.append("**Better Answer:**")
+        lines.append("")
+        lines.append(item.get("better_answer", ""))
+        lines.append("")
+        lines.append("**Why This Is Better:**")
+        lines.append("")
+        lines.append(item.get("why_this_is_better", ""))
+        lines.append("")
+        lines.append("**Architect Upgrade:**")
+        lines.append("")
+        lines.append(item.get("architect_upgrade", ""))
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
 
 def evaluation_to_markdown(evaluation: EvaluationResult, rewards_summary: Dict[str, Any]) -> str:
     strengths = evaluation.strengths or []
@@ -249,6 +287,16 @@ def main() -> None:
     )
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
 
+    answer_coaching = generate_answer_coaching(
+    concept_note=concept_note,
+    architect_note=architect_note,
+    assessment=assessment,
+    user_answers=user_answers,
+    evaluation=evaluation,
+    llm_callable=evaluator_llm_callable,
+)
+
+
     write_json(
         f"runs/{run_id}/answers.json",
         {
@@ -257,6 +305,12 @@ def main() -> None:
         },
     )
     write_json(f"runs/{run_id}/evaluation.json", evaluation)
+
+    write_json(f"runs/{run_id}/answer_coaching.json", answer_coaching)
+    write_markdown(
+        f"assessments/evaluations/{topic_id}_answer_coaching.md",
+        answer_coaching_to_markdown(answer_coaching),
+    )
 
     completed = evaluation.decision == "pass"
     new_status = "completed" if completed else evaluation.decision
@@ -328,8 +382,10 @@ topic_id: {topic_id}
             "assessment": f"runs/{run_id}/assessment.json",
             "answers": f"runs/{run_id}/answers.json",
             "evaluation": f"runs/{run_id}/evaluation.json",
+            "answer_coaching": f"runs/{run_id}/answer_coaching.json",
             "rewards": f"runs/{run_id}/rewards.json",
             "refined_note": f"notes/refined/{topic_id}_refined.md",
+            
         },
         "scores": {
             "conceptual_clarity": evaluation.scores.conceptual_clarity,
