@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 TopicStatus = Literal["not_started", "locked", "in_progress", "completed", "revise", "borderline"]
 SelectionMode = Literal["next_unlocked", "retry", "prerequisite_recovery", "manual_selected"]
-QuestionType = Literal["concept", "example", "scenario", "architect", "teachback"]
+QuestionType = Literal["concept", "example", "scenario", "architect", "teachback", "concept_check", "tiny_hands_on", "failure_diagnosis", "architect_decision"]
 DecisionType = Literal["pass", "borderline", "revise", "fail_prereq"]
 NextActionType = Literal["next_topic", "retry_same_topic", "go_to_prerequisite", "reinforce_and_continue"]
 

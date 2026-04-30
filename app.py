@@ -431,10 +431,37 @@ def status_chip(status: str) -> str:
     return mapping.get(status, status)
 
 
+def needs_attention(row: Dict[str, str]) -> bool:
+    last_decision = (row.get("last_decision") or "").lower()
+    status = (row.get("status") or "").lower()
+    return last_decision in {"borderline", "revise", "fail_prereq"} or status in {"borderline", "revise"}
+
+
+def display_status_chip(row: Dict[str, str]) -> str:
+    status = row.get("status", "")
+    last_decision = (row.get("last_decision") or "").lower()
+
+    if status == "completed" and last_decision == "borderline":
+        return "🟧 Cleared · Improve"
+    if status == "completed" and last_decision == "revise":
+        return "🟥 Replay Recommended"
+    return status_chip(status)
+
+
 def compute_overall_metrics(progress_rows: List[Dict[str, str]]) -> Dict[str, Any]:
     completed = sum(1 for row in progress_rows if row.get("status") == "completed")
-    borderline = sum(1 for row in progress_rows if row.get("status") == "borderline")
-    revise = sum(1 for row in progress_rows if row.get("status") == "revise")
+    borderline = sum(
+        1
+        for row in progress_rows
+        if (row.get("last_decision") or "").lower() == "borderline"
+        or row.get("status") == "borderline"
+    )
+    revise = sum(
+        1
+        for row in progress_rows
+        if (row.get("last_decision") or "").lower() in {"revise", "fail_prereq"}
+        or row.get("status") == "revise"
+    )
     unlocked = sum(
         1
         for row in progress_rows
@@ -477,6 +504,8 @@ def badge_label_for_topic(row: Dict[str, str], rewards_state: Dict[str, Any]) ->
 
     if row["status"] == "locked":
         return "🔒 Locked"
+    if needs_attention(row):
+        return "🎯 Cleared · Improve for more stars"
     if last_badges:
         return f"🏅 {last_badges[-1]}"
 
@@ -577,7 +606,7 @@ def render_level_card(
         <div class="level-card{selected_class}">
             <div class="level-id">{topic_id}</div>
             <div class="level-title">{title}</div>
-            <div class="level-status">{status_chip(status)}</div>
+            <div class="level-status">{display_status_chip(row)}</div>
             <div class="level-stars">{stars}</div>
             <div class="level-badge">{badge}</div>
         </div>
@@ -851,7 +880,7 @@ with tabs[1]:
             st.write(architect_note["interview_framing"])
 
         with right:
-            st.subheader("Your Answers")
+            st.subheader("Mission Response")
 
             updated_answers = {
                 "topic_id": answers_doc["topic_id"],
@@ -860,7 +889,9 @@ with tabs[1]:
             }
 
             for i, item in enumerate(answers_doc["answers"], start=1):
-                st.markdown(f"**Q{i}. {item['question']}**")
+                mission_type = item.get("type", "mission").replace("_", " ").title()
+                st.markdown(f"**Mission {i} · {mission_type}**")
+                st.markdown(item["question"])
                 answer_text = st.text_area(
                     label=f"Answer for {item['question_id']}",
                     value=item.get("answer", ""),

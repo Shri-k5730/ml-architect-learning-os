@@ -30,6 +30,7 @@ Do not be vague.
 Do not write long essays.
 Do not repeat generic theory.
 Make the better answer interview-ready and system-relevant.
+For hands-on missions, the better answer must show the decision path, not just the final answer.
 
 Output strict JSON only.
 
@@ -99,8 +100,8 @@ def generate_answer_coaching(
         "user_answers": [answer.to_dict() for answer in user_answers],
         "evaluation": evaluation.to_dict(),
         "instruction": (
-            "For every assessment question, provide a better answer that the learner "
-            "can study and reuse as an interview-quality response."
+            "For every assessment mission, provide a better response that the learner "
+            "can study and reuse as an interview-quality, system-relevant answer."
         ),
     }
 

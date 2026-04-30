@@ -5,9 +5,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
-from src.agents.answer_coach import generate_answer_coaching
 
 import yaml
+
+from src.agents.answer_coach import generate_answer_coaching
 
 from src.agents.evaluator_refiner import (
     build_evaluator_refiner_payload,
@@ -288,13 +289,13 @@ def main() -> None:
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
 
     answer_coaching = generate_answer_coaching(
-    concept_note=concept_note,
-    architect_note=architect_note,
-    assessment=assessment,
-    user_answers=user_answers,
-    evaluation=evaluation,
-    llm_callable=evaluator_llm_callable,
-)
+        concept_note=concept_note,
+        architect_note=architect_note,
+        assessment=assessment,
+        user_answers=user_answers,
+        evaluation=evaluation,
+        llm_callable=evaluator_llm_callable,
+    )
 
 
     write_json(
@@ -312,7 +313,13 @@ def main() -> None:
         answer_coaching_to_markdown(answer_coaching),
     )
 
-    completed = evaluation.decision == "pass"
+    allow_borderline_progression = bool(
+        learner_profile.get("progression_rules", {}).get("allow_borderline_progression", True)
+    )
+
+    completed = evaluation.decision == "pass" or (
+        evaluation.decision == "borderline" and allow_borderline_progression
+    )
     new_status = "completed" if completed else evaluation.decision
 
     update_topic_status(
@@ -411,6 +418,7 @@ topic_id: {topic_id}
             "next_action": evaluation.next_action,
             "unlocked_topics": unlocked_topics,
             "reward_summary": rewards_summary,
+            "progression_completed": completed,
         },
     )
 
@@ -423,6 +431,7 @@ topic_id: {topic_id}
                 "next_action": evaluation.next_action,
                 "unlocked_topics": unlocked_topics,
                 "reward_summary": rewards_summary,
+                "progression_completed": completed,
             },
             indent=2,
         )
