@@ -384,6 +384,112 @@ def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
 
 
 # -----------------------------
+# Action output and run diagnostics
+# -----------------------------
+def record_action_result(action: str, ok: bool, output: str) -> None:
+    st.session_state["last_action"] = action
+    st.session_state["last_action_ok"] = ok
+    st.session_state["last_action_output"] = output or "No output returned."
+
+
+def render_last_action_result() -> None:
+    if "last_action_output" not in st.session_state:
+        return
+
+    ok = bool(st.session_state.get("last_action_ok", False))
+    action = st.session_state.get("last_action", "Last action")
+    output = st.session_state.get("last_action_output", "")
+
+    with st.expander(f"Last Action Output . {action}", expanded=not ok):
+        if ok:
+            st.success(f"{action} completed.")
+        else:
+            st.error(f"{action} failed.")
+        st.code(output)
+
+
+def list_run_dirs() -> List[Path]:
+    if not RUNS_DIR.exists():
+        return []
+    return sorted(
+        [p for p in RUNS_DIR.iterdir() if p.is_dir() and (p / "run_state.json").exists()],
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+
+def load_json_or_none(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        return load_json(path)
+    except Exception:
+        return None
+
+
+def load_text_or_empty(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return load_text(path)
+    except Exception as exc:
+        return f"Could not read {path.name}: {exc}"
+
+
+def render_json_file(label: str, path: Path) -> None:
+    data = load_json_or_none(path)
+    with st.expander(label, expanded=False):
+        if data is None:
+            st.info(f"Missing or unreadable: {path}")
+        else:
+            st.json(data)
+
+
+def render_text_file(label: str, path: Path) -> None:
+    text = load_text_or_empty(path)
+    with st.expander(label, expanded=False):
+        if not text:
+            st.info(f"Missing or empty: {path}")
+        else:
+            st.code(text)
+
+
+def render_run_details() -> None:
+    run_dirs = list_run_dirs()
+    if not run_dirs:
+        st.info("No run directories found yet.")
+        return
+
+    options = [p.name for p in run_dirs]
+    selected_name = st.selectbox("Select run", options=options, index=0)
+    run_dir = RUNS_DIR / selected_name
+
+    state = load_json_or_none(run_dir / "run_state.json") or {}
+    phase = state.get("phase", "unknown")
+    status = state.get("status", "unknown")
+    topic = state.get("topic_id", "unknown")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Run", selected_name)
+    c2.metric("Topic", topic)
+    c3.metric("Phase", phase)
+    c4.metric("Status", status)
+
+    st.markdown("### Run Files")
+    render_json_file("run_state.json", run_dir / "run_state.json")
+    render_text_file("logs.txt", run_dir / "logs.txt")
+    render_json_file("selected_topic.json", run_dir / "selected_topic.json")
+    render_json_file("concept_note.json", run_dir / "concept_note.json")
+    render_json_file("architect_note.json", run_dir / "architect_note.json")
+    render_json_file("assessment.json", run_dir / "assessment.json")
+    render_json_file("answers.json", run_dir / "answers.json")
+    render_json_file("evaluation.json", run_dir / "evaluation.json")
+    render_json_file("answer_coaching.json", run_dir / "answer_coaching.json")
+    render_json_file("rewards.json", run_dir / "rewards.json")
+
+
+
+# -----------------------------
 # Metrics and gamification
 # -----------------------------
 def to_int(value: Any) -> Optional[int]:
@@ -431,37 +537,10 @@ def status_chip(status: str) -> str:
     return mapping.get(status, status)
 
 
-def needs_attention(row: Dict[str, str]) -> bool:
-    last_decision = (row.get("last_decision") or "").lower()
-    status = (row.get("status") or "").lower()
-    return last_decision in {"borderline", "revise", "fail_prereq"} or status in {"borderline", "revise"}
-
-
-def display_status_chip(row: Dict[str, str]) -> str:
-    status = row.get("status", "")
-    last_decision = (row.get("last_decision") or "").lower()
-
-    if status == "completed" and last_decision == "borderline":
-        return "🟧 Cleared · Improve"
-    if status == "completed" and last_decision == "revise":
-        return "🟥 Replay Recommended"
-    return status_chip(status)
-
-
 def compute_overall_metrics(progress_rows: List[Dict[str, str]]) -> Dict[str, Any]:
     completed = sum(1 for row in progress_rows if row.get("status") == "completed")
-    borderline = sum(
-        1
-        for row in progress_rows
-        if (row.get("last_decision") or "").lower() == "borderline"
-        or row.get("status") == "borderline"
-    )
-    revise = sum(
-        1
-        for row in progress_rows
-        if (row.get("last_decision") or "").lower() in {"revise", "fail_prereq"}
-        or row.get("status") == "revise"
-    )
+    borderline = sum(1 for row in progress_rows if row.get("status") == "borderline")
+    revise = sum(1 for row in progress_rows if row.get("status") == "revise")
     unlocked = sum(
         1
         for row in progress_rows
@@ -504,8 +583,6 @@ def badge_label_for_topic(row: Dict[str, str], rewards_state: Dict[str, Any]) ->
 
     if row["status"] == "locked":
         return "🔒 Locked"
-    if needs_attention(row):
-        return "🎯 Cleared · Improve for more stars"
     if last_badges:
         return f"🏅 {last_badges[-1]}"
 
@@ -606,7 +683,7 @@ def render_level_card(
         <div class="level-card{selected_class}">
             <div class="level-id">{topic_id}</div>
             <div class="level-title">{title}</div>
-            <div class="level-status">{display_status_chip(row)}</div>
+            <div class="level-status">{status_chip(status)}</div>
             <div class="level-stars">{stars}</div>
             <div class="level-badge">{badge}</div>
         </div>
@@ -734,32 +811,30 @@ with action_c1:
         use_container_width=True,
         disabled=awaiting_run is not None,
     ):
-        ok, output = start_lesson_for_topic(None)
+        with st.spinner("Starting next lesson..."):
+            ok, output = start_lesson_for_topic(None)
+        record_action_result("Start Next Lesson", ok, output)
         if ok:
-            st.success("New lesson created.")
-        else:
-            st.error("Failed to start lesson.")
-        st.code(output)
-        st.rerun()
+            st.rerun()
 
 with action_c2:
     if st.button("Evaluate Current Lesson", use_container_width=True):
         if awaiting_run is None:
             st.warning("No lesson is currently awaiting answers.")
         else:
-            ok, output = run_module("src.evaluate_lesson")
+            with st.spinner("Evaluating current lesson. This can take a little time..."):
+                ok, output = run_module("src.evaluate_lesson")
+            record_action_result("Evaluate Current Lesson", ok, output)
             if ok:
-                st.success("Lesson evaluated.")
-            else:
-                st.error("Lesson evaluation failed.")
-            st.code(output)
-            st.rerun()
+                st.rerun()
 
 if latest_run:
     state = load_json(latest_run / "run_state.json")
     st.caption(
         f"Latest run: {state.get('run_id')} | topic: {state.get('topic_id')} | phase: {state.get('phase')} | status: {state.get('status')}"
     )
+
+render_last_action_result()
 
 tabs = st.tabs(
     [
@@ -768,6 +843,7 @@ tabs = st.tabs(
         "📊 Last Evaluation",
         "📈 Trajectory",
         "📚 Notes Vault",
+        "🧾 Run Details",
         "🏆 Rewards",
     ]
 )
@@ -802,13 +878,11 @@ with tabs[0]:
                             key=f"play_{topic_id}",
                             disabled=(not playable) or (awaiting_run is not None),
                         ):
-                            ok, output = start_lesson_for_topic(topic_id)
+                            with st.spinner(f"Starting {topic_id}..."):
+                                ok, output = start_lesson_for_topic(topic_id)
+                            record_action_result(f"Play {topic_id}", ok, output)
                             if ok:
-                                st.success(f"Started {topic_id}.")
-                            else:
-                                st.error(f"Failed to start {topic_id}.")
-                            st.code(output)
-                            st.rerun()
+                                st.rerun()
 
     st.divider()
     st.subheader("Latest Result")
@@ -918,13 +992,11 @@ with tabs[1]:
             with save_c2:
                 if st.button("Save + Evaluate", use_container_width=True):
                     save_answers(answer_path, updated_answers)
-                    ok, output = run_module("src.evaluate_lesson")
+                    with st.spinner("Saving answers and evaluating mission responses. This can take a little time..."):
+                        ok, output = run_module("src.evaluate_lesson")
+                    record_action_result("Save + Evaluate", ok, output)
                     if ok:
-                        st.success("Lesson evaluated.")
-                    else:
-                        st.error("Lesson evaluation failed.")
-                    st.code(output)
-                    st.rerun()
+                        st.rerun()
 
 
 
@@ -1032,9 +1104,19 @@ with tabs[4]:
                 st.info("No answer coaching note found.")
 
 # -----------------------------
-# REWARDS TAB
+# RUN DETAILS TAB
 # -----------------------------
 with tabs[5]:
+    st.subheader("Run Details")
+    st.caption("Use this tab to inspect what happened after hosted Streamlit actions. These files live in the app runtime, not automatically in GitHub.")
+    render_last_action_result()
+    render_run_details()
+
+
+# -----------------------------
+# REWARDS TAB
+# -----------------------------
+with tabs[6]:
     st.subheader("Rewards")
 
     streaks = rewards_state.get("streaks", {})
