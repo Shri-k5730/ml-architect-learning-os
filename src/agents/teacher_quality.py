@@ -248,12 +248,13 @@ def generate_teacher_note_with_quality_loop(
             }
             return final_note, diagnostics
 
-    raise TeacherQualityError(
-        "Teacher note failed quality gate after maximum revision rounds.",
-        diagnostics={
-            "status": "failed_after_max_revisions",
-            "attempt_history": attempt_history,
-            "final_review": review,
-            "final_quality_gate": quality_gate,
-        },
-    )
+    final_note = build_dataclass(current_note, ConceptNote)
+    diagnostics = {
+        "status": "accepted_with_quality_warning",
+        "attempt_history": attempt_history,
+        "review": review,
+        "initial_quality_gate": attempt_history[0]["quality_gate"],
+        "revised_quality_gate": quality_gate,
+        "warning": "Teacher note failed strict quality gate after max revision rounds, but lesson generation continued.",
+    }
+    return final_note, diagnostics
