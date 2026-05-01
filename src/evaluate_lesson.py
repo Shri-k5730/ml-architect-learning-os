@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from src.utils.supabase_store import append_event, upsert_artifact, upsert_run, upsert_state
 
 import yaml
 
@@ -36,6 +37,82 @@ TOPICS_DIR = PROJECT_ROOT / "topics"
 
 class EvaluateLessonError(Exception):
     """Raised when lesson evaluation fails."""
+
+def persist_evaluation_to_supabase(
+    run_id: str,
+    topic_id: str,
+    topic_title: str,
+    final_run_state: Dict[str, Any],
+    answers_payload: Dict[str, Any],
+    evaluation: EvaluationResult,
+    rewards_summary: Dict[str, Any],
+    answer_coaching: Dict[str, Any] | None,
+    unlocked_topics: List[str],
+) -> None:
+    upsert_run(
+        run_id=run_id,
+        topic_id=topic_id,
+        topic_title=topic_title,
+        phase=final_run_state["phase"],
+        status=final_run_state["status"],
+        run_state=final_run_state,
+    )
+
+    upsert_artifact(
+        run_id=run_id,
+        artifact_type="answers",
+        topic_id=topic_id,
+        payload=answers_payload,
+    )
+
+    upsert_artifact(
+        run_id=run_id,
+        artifact_type="evaluation",
+        topic_id=topic_id,
+        payload=evaluation.to_dict(),
+    )
+
+    upsert_artifact(
+        run_id=run_id,
+        artifact_type="rewards",
+        topic_id=topic_id,
+        payload=rewards_summary,
+    )
+
+    if answer_coaching is not None:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="answer_coaching",
+            topic_id=topic_id,
+            payload=answer_coaching,
+        )
+
+    upsert_state(
+        state_key="latest_evaluation",
+        payload={
+            "run_id": run_id,
+            "topic_id": topic_id,
+            "topic_title": topic_title,
+            "status": final_run_state["status"],
+            "scores": final_run_state["scores"],
+            "next_action": final_run_state["next_action"],
+            "unlocked_topics": unlocked_topics,
+            "rewards": rewards_summary,
+        },
+    )
+
+    append_event(
+        event_type="evaluation_complete",
+        run_id=run_id,
+        topic_id=topic_id,
+        payload={
+            "decision": evaluation.decision,
+            "status": final_run_state["status"],
+            "scores": final_run_state["scores"],
+            "unlocked_topics": unlocked_topics,
+            "reward_summary": rewards_summary,
+        },
+    )
 
 
 def load_yaml(file_path: Path) -> Dict[str, Any]:
@@ -310,13 +387,14 @@ def main() -> None:
         )
 
 
-    write_json(
-        f"runs/{run_id}/answers.json",
-        {
-            "topic_id": topic_id,
-            "answers": [a.to_dict() for a in user_answers],
-        },
-    )
+    answers_payload = {
+    "topic_id": topic_id,
+    "answers": [a.to_dict() for a in user_answers],
+}
+
+    write_json(f"runs/{run_id}/answers.json", answers_payload)
+
+
     write_json(f"runs/{run_id}/evaluation.json", evaluation)
 
     if answer_coaching is not None:
@@ -421,6 +499,21 @@ topic_id: {topic_id}
     }
 
     write_json(f"runs/{run_id}/run_state.json", final_run_state)
+    try:
+        persist_evaluation_to_supabase(
+            run_id=run_id,
+            topic_id=topic_id,
+            topic_title=topic.title,
+            final_run_state=final_run_state,
+            answers_payload=answers_payload,
+            evaluation=evaluation,
+            rewards_summary=rewards_summary,
+            answer_coaching=answer_coaching,
+            unlocked_topics=unlocked_topics,
+        )
+        write_log(run_id, "Supabase persistence completed for evaluation.")
+    except Exception as exc:
+        write_log(run_id, f"Supabase persistence failed but local evaluation completed: {exc}")
 
     append_jsonl(
         "data/run_history.jsonl",
