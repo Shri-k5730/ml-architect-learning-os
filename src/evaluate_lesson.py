@@ -288,14 +288,26 @@ def main() -> None:
     )
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
 
-    answer_coaching = generate_answer_coaching(
-        concept_note=concept_note,
-        architect_note=architect_note,
-        assessment=assessment,
-        user_answers=user_answers,
-        evaluation=evaluation,
-        llm_callable=evaluator_llm_callable,
-    )
+    answer_coaching = None
+
+    try:
+        answer_coaching = generate_answer_coaching(
+            concept_note=concept_note,
+            architect_note=architect_note,
+            assessment=assessment,
+            user_answers=user_answers,
+            evaluation=evaluation,
+            llm_callable=evaluator_llm_callable,
+        )
+    except Exception as exc:
+        write_log(run_id, f"Answer coaching failed but evaluation will continue: {exc}")
+        write_json(
+            f"runs/{run_id}/answer_coaching_error.json",
+            {
+                "error": str(exc),
+                "message": "Answer coaching failed after evaluation. This does not block lesson completion.",
+            },
+        )
 
 
     write_json(
@@ -307,11 +319,12 @@ def main() -> None:
     )
     write_json(f"runs/{run_id}/evaluation.json", evaluation)
 
-    write_json(f"runs/{run_id}/answer_coaching.json", answer_coaching)
-    write_markdown(
-        f"assessments/evaluations/{topic_id}_answer_coaching.md",
-        answer_coaching_to_markdown(answer_coaching),
-    )
+    if answer_coaching is not None:
+        write_json(f"runs/{run_id}/answer_coaching.json", answer_coaching)
+        write_markdown(
+            f"assessments/evaluations/{topic_id}_answer_coaching.md",
+            answer_coaching_to_markdown(answer_coaching),
+        )
 
     allow_borderline_progression = bool(
         learner_profile.get("progression_rules", {}).get("allow_borderline_progression", True)
@@ -389,7 +402,11 @@ topic_id: {topic_id}
             "assessment": f"runs/{run_id}/assessment.json",
             "answers": f"runs/{run_id}/answers.json",
             "evaluation": f"runs/{run_id}/evaluation.json",
-            "answer_coaching": f"runs/{run_id}/answer_coaching.json",
+            "answer_coaching": (
+                f"runs/{run_id}/answer_coaching.json"
+                if answer_coaching is not None
+                else f"runs/{run_id}/answer_coaching_error.json"
+            ),
             "rewards": f"runs/{run_id}/rewards.json",
             "refined_note": f"notes/refined/{topic_id}_refined.md",
             
