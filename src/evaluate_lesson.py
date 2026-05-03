@@ -5,12 +5,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
-from src.utils.supabase_store import append_event, upsert_artifact, upsert_run, upsert_state
 
 import yaml
 
 from src.agents.answer_coach import generate_answer_coaching
-
 from src.agents.evaluator_refiner import (
     build_evaluator_refiner_payload,
     evaluate_and_refine,
@@ -26,7 +24,13 @@ from src.schemas import (
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.rewards import apply_evaluation_rewards
-from src.utils.tracker import get_progress_row, unlock_topic, update_topic_status
+from src.utils.supabase_store import append_event, upsert_artifact, upsert_run, upsert_state
+from src.utils.tracker import (
+    get_progress_row,
+    normalize_linear_progression,
+    unlock_next_sequential_topic,
+    update_topic_status,
+)
 from src.utils.validator import build_dataclass
 
 
@@ -37,82 +41,6 @@ TOPICS_DIR = PROJECT_ROOT / "topics"
 
 class EvaluateLessonError(Exception):
     """Raised when lesson evaluation fails."""
-
-def persist_evaluation_to_supabase(
-    run_id: str,
-    topic_id: str,
-    topic_title: str,
-    final_run_state: Dict[str, Any],
-    answers_payload: Dict[str, Any],
-    evaluation: EvaluationResult,
-    rewards_summary: Dict[str, Any],
-    answer_coaching: Dict[str, Any] | None,
-    unlocked_topics: List[str],
-) -> None:
-    upsert_run(
-        run_id=run_id,
-        topic_id=topic_id,
-        topic_title=topic_title,
-        phase=final_run_state["phase"],
-        status=final_run_state["status"],
-        run_state=final_run_state,
-    )
-
-    upsert_artifact(
-        run_id=run_id,
-        artifact_type="answers",
-        topic_id=topic_id,
-        payload=answers_payload,
-    )
-
-    upsert_artifact(
-        run_id=run_id,
-        artifact_type="evaluation",
-        topic_id=topic_id,
-        payload=evaluation.to_dict(),
-    )
-
-    upsert_artifact(
-        run_id=run_id,
-        artifact_type="rewards",
-        topic_id=topic_id,
-        payload=rewards_summary,
-    )
-
-    if answer_coaching is not None:
-        upsert_artifact(
-            run_id=run_id,
-            artifact_type="answer_coaching",
-            topic_id=topic_id,
-            payload=answer_coaching,
-        )
-
-    upsert_state(
-        state_key="latest_evaluation",
-        payload={
-            "run_id": run_id,
-            "topic_id": topic_id,
-            "topic_title": topic_title,
-            "status": final_run_state["status"],
-            "scores": final_run_state["scores"],
-            "next_action": final_run_state["next_action"],
-            "unlocked_topics": unlocked_topics,
-            "rewards": rewards_summary,
-        },
-    )
-
-    append_event(
-        event_type="evaluation_complete",
-        run_id=run_id,
-        topic_id=topic_id,
-        payload={
-            "decision": evaluation.decision,
-            "status": final_run_state["status"],
-            "scores": final_run_state["scores"],
-            "unlocked_topics": unlocked_topics,
-            "reward_summary": rewards_summary,
-        },
-    )
 
 
 def load_yaml(file_path: Path) -> Dict[str, Any]:
@@ -207,27 +135,23 @@ def load_user_answers(answer_json_path: Path) -> List[UserAnswer]:
         if not answer_text:
             raise EvaluateLessonError(f"Question '{question_id}' has an empty answer.")
 
-        user_answers.append(
-            UserAnswer(
-                question_id=question_id,
-                answer=answer_text,
-            )
-        )
+        user_answers.append(UserAnswer(question_id=question_id, answer=answer_text))
 
     return user_answers
 
+
 def answer_coaching_to_markdown(answer_coaching: Dict[str, Any]) -> str:
     lines = [
-        f"---",
+        "---",
         f"topic_id: {answer_coaching.get('topic_id', '')}",
-        f"---",
+        "---",
         "",
         "# Answer Coaching",
         "",
     ]
 
     for item in answer_coaching.get("coaching", []):
-        lines.append(f"## {item.get('question_id', '')}")
+        lines.append(f"## {item.get('question_id', '')} · {item.get('answer_quality', '').upper()}")
         lines.append("")
         lines.append(f"**Question:** {item.get('question', '')}")
         lines.append("")
@@ -253,6 +177,7 @@ def answer_coaching_to_markdown(answer_coaching: Dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"
+
 
 def evaluation_to_markdown(evaluation: EvaluationResult, rewards_summary: Dict[str, Any]) -> str:
     strengths = evaluation.strengths or []
@@ -285,6 +210,7 @@ next_action: {evaluation.next_action}
 - Best Stars: {rewards_summary.get('best_stars', '-')}
 - XP Earned: {rewards_summary.get('xp_earned', '-')}
 - Total XP: {rewards_summary.get('total_xp', '-')}
+- Completed: {rewards_summary.get('completed', '-')}
 
 # Badges Awarded
 
@@ -312,25 +238,57 @@ next_action: {evaluation.next_action}
 """
 
 
-def unlock_dependent_topics(topic_catalog: List[Topic], completed_topic_id: str) -> List[str]:
-    unlocked: List[str] = []
+def persist_evaluation_to_supabase(
+    run_id: str,
+    topic_id: str,
+    topic_title: str,
+    final_run_state: Dict[str, Any],
+    answers_payload: Dict[str, Any],
+    evaluation: EvaluationResult,
+    rewards_summary: Dict[str, Any],
+    answer_coaching: Dict[str, Any],
+    unlocked_topics: List[str],
+) -> None:
+    upsert_run(
+        run_id=run_id,
+        topic_id=topic_id,
+        topic_title=topic_title,
+        phase=final_run_state["phase"],
+        status=final_run_state["status"],
+        run_state=final_run_state,
+    )
 
-    for topic in topic_catalog:
-        if completed_topic_id not in topic.prerequisites:
-            continue
+    upsert_artifact(run_id=run_id, artifact_type="answers", topic_id=topic_id, payload=answers_payload)
+    upsert_artifact(run_id=run_id, artifact_type="evaluation", topic_id=topic_id, payload=evaluation.to_dict())
+    upsert_artifact(run_id=run_id, artifact_type="answer_coaching", topic_id=topic_id, payload=answer_coaching)
+    upsert_artifact(run_id=run_id, artifact_type="rewards", topic_id=topic_id, payload=rewards_summary)
 
-        all_done = True
-        for prereq in topic.prerequisites:
-            row = get_progress_row(prereq)
-            if not row or row.get("status") != "completed":
-                all_done = False
-                break
+    upsert_state(
+        state_key="latest_evaluation",
+        payload={
+            "run_id": run_id,
+            "topic_id": topic_id,
+            "topic_title": topic_title,
+            "status": final_run_state["status"],
+            "scores": final_run_state["scores"],
+            "next_action": final_run_state["next_action"],
+            "unlocked_topics": unlocked_topics,
+            "rewards": rewards_summary,
+        },
+    )
 
-        if all_done:
-            unlock_topic(topic.topic_id)
-            unlocked.append(topic.topic_id)
-
-    return unlocked
+    append_event(
+        event_type="evaluation_complete",
+        run_id=run_id,
+        topic_id=topic_id,
+        payload={
+            "decision": evaluation.decision,
+            "status": final_run_state["status"],
+            "scores": final_run_state["scores"],
+            "unlocked_topics": unlocked_topics,
+            "reward_summary": rewards_summary,
+        },
+    )
 
 
 def main() -> None:
@@ -365,44 +323,27 @@ def main() -> None:
     )
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
 
-    answer_coaching = None
-
-    try:
-        answer_coaching = generate_answer_coaching(
-            concept_note=concept_note,
-            architect_note=architect_note,
-            assessment=assessment,
-            user_answers=user_answers,
-            evaluation=evaluation,
-            llm_callable=evaluator_llm_callable,
-        )
-    except Exception as exc:
-        write_log(run_id, f"Answer coaching failed but evaluation will continue: {exc}")
-        write_json(
-            f"runs/{run_id}/answer_coaching_error.json",
-            {
-                "error": str(exc),
-                "message": "Answer coaching failed after evaluation. This does not block lesson completion.",
-            },
-        )
-
+    answer_coaching = generate_answer_coaching(
+        concept_note=concept_note,
+        architect_note=architect_note,
+        assessment=assessment,
+        user_answers=user_answers,
+        evaluation=evaluation,
+        llm_callable=None,
+    )
 
     answers_payload = {
-    "topic_id": topic_id,
-    "answers": [a.to_dict() for a in user_answers],
-}
+        "topic_id": topic_id,
+        "answers": [a.to_dict() for a in user_answers],
+    }
 
     write_json(f"runs/{run_id}/answers.json", answers_payload)
-
-
     write_json(f"runs/{run_id}/evaluation.json", evaluation)
-
-    if answer_coaching is not None:
-        write_json(f"runs/{run_id}/answer_coaching.json", answer_coaching)
-        write_markdown(
-            f"assessments/evaluations/{topic_id}_answer_coaching.md",
-            answer_coaching_to_markdown(answer_coaching),
-        )
+    write_json(f"runs/{run_id}/answer_coaching.json", answer_coaching)
+    write_markdown(
+        f"assessments/evaluations/{topic_id}_answer_coaching.md",
+        answer_coaching_to_markdown(answer_coaching),
+    )
 
     allow_borderline_progression = bool(
         learner_profile.get("progression_rules", {}).get("allow_borderline_progression", True)
@@ -428,8 +369,9 @@ def main() -> None:
 
     unlocked_topics: List[str] = []
     if completed:
-        unlocked_topics = unlock_dependent_topics(topic_catalog, topic_id)
-        write_log(run_id, f"Unlocked dependent topics: {unlocked_topics}")
+        unlocked_topics = unlock_next_sequential_topic(topic_id)
+        normalize_linear_progression()
+        write_log(run_id, f"Sequential V1 unlocked topics: {unlocked_topics}")
 
     rewards_summary = apply_evaluation_rewards(
         run_id=run_id,
@@ -442,6 +384,7 @@ def main() -> None:
             "communication": evaluation.scores.communication,
         },
         decision=evaluation.decision,
+        completed=completed,
     )
 
     write_json(f"runs/{run_id}/rewards.json", rewards_summary)
@@ -480,14 +423,9 @@ topic_id: {topic_id}
             "assessment": f"runs/{run_id}/assessment.json",
             "answers": f"runs/{run_id}/answers.json",
             "evaluation": f"runs/{run_id}/evaluation.json",
-            "answer_coaching": (
-                f"runs/{run_id}/answer_coaching.json"
-                if answer_coaching is not None
-                else f"runs/{run_id}/answer_coaching_error.json"
-            ),
+            "answer_coaching": f"runs/{run_id}/answer_coaching.json",
             "rewards": f"runs/{run_id}/rewards.json",
             "refined_note": f"notes/refined/{topic_id}_refined.md",
-            
         },
         "scores": {
             "conceptual_clarity": evaluation.scores.conceptual_clarity,
@@ -499,6 +437,7 @@ topic_id: {topic_id}
     }
 
     write_json(f"runs/{run_id}/run_state.json", final_run_state)
+
     try:
         persist_evaluation_to_supabase(
             run_id=run_id,

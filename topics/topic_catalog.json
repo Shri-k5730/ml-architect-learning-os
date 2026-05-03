@@ -43,7 +43,6 @@
     "domain": "machine_learning_fundamentals",
     "difficulty": 1,
     "prerequisites": [
-      "mlf_001",
       "mlf_002"
     ],
     "architect_relevance": [
@@ -84,7 +83,7 @@
     "domain": "machine_learning_fundamentals",
     "difficulty": 2,
     "prerequisites": [
-      "mlf_003"
+      "mlf_004"
     ],
     "architect_relevance": [
       "production_reliability",
@@ -124,8 +123,7 @@
     "domain": "machine_learning_fundamentals",
     "difficulty": 2,
     "prerequisites": [
-      "mlf_003",
-      "mlf_005"
+      "mlf_006"
     ],
     "architect_relevance": [
       "evaluation_failure",
@@ -145,7 +143,7 @@
     "domain": "evaluation_and_metrics",
     "difficulty": 2,
     "prerequisites": [
-      "mlf_006"
+      "mlf_007"
     ],
     "architect_relevance": [
       "model_tradeoffs",
@@ -165,8 +163,7 @@
     "domain": "evaluation_and_metrics",
     "difficulty": 2,
     "prerequisites": [
-      "mlf_004",
-      "mlf_003"
+      "mlf_008"
     ],
     "architect_relevance": [
       "metric_selection",
