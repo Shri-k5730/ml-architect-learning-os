@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 
 from src.utils.rewards import get_topic_reward_state, load_rewards_state
-from src.utils.cloud_state import bootstrap_cloud_state
+from src.utils.cloud_state import repair_cloud_state_on_startup
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -352,16 +352,9 @@ def run_module(
         cmd.extend(args)
 
     env = os.environ.copy()
-    secret_keys = [
-        "OPENAI_API_KEY",
-        "SUPABASE_ENABLED",
-        "SUPABASE_URL",
-        "SUPABASE_SERVICE_ROLE_KEY",
-    ]
-    for key in secret_keys:
-        value = get_secret_value(key, None)
-        if value is not None and key not in env:
-            env[key] = str(value)
+    openai_key = get_secret_value("OPENAI_API_KEY", None)
+    if openai_key and "OPENAI_API_KEY" not in env:
+        env["OPENAI_API_KEY"] = str(openai_key)
     if env_extra:
         env.update(env_extra)
 
@@ -826,13 +819,16 @@ def is_playable_status(status: str) -> bool:
 st.set_page_config(page_title="ML Architect Learning OS", layout="wide")
 inject_theme()
 require_login()
-cloud_bootstrap_status = bootstrap_cloud_state()
 
 st.markdown('<div class="main-title">ML Architect Learning OS</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="sub-title">Level up topic by topic. Track mastery, weak spots, rewards, and architect readiness.</div>',
     unsafe_allow_html=True,
 )
+
+cloud_repair_summary = repair_cloud_state_on_startup()
+if cloud_repair_summary.get("error"):
+    st.warning(f"Cloud state repair warning: {cloud_repair_summary['error']}")
 
 progress_rows = load_progress_tracker()
 rewards_state = load_rewards_state()

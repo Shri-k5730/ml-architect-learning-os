@@ -4,278 +4,329 @@ import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from src.utils.rewards import normalize_rewards_state
+from src.utils.supabase_store import get_supabase_client, supabase_enabled, upsert_state
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
-RUNS_DIR = PROJECT_ROOT / "runs"
-ASSESSMENTS_DIR = PROJECT_ROOT / "assessments"
-NOTES_DIR = PROJECT_ROOT / "notes"
+TOPICS_DIR = PROJECT_ROOT / "topics"
 PROGRESS_TRACKER_PATH = DATA_DIR / "progress_tracker.csv"
 REWARDS_STATE_PATH = DATA_DIR / "rewards_state.json"
 RUN_HISTORY_PATH = DATA_DIR / "run_history.jsonl"
-WEAK_SPOTS_LOG_PATH = DATA_DIR / "weak_spots_log.csv"
-TOPIC_UNLOCK_RULES_PATH = PROJECT_ROOT / "topics" / "topic_unlock_rules.json"
+
+PROGRESS_FIELDS = [
+    "topic_id",
+    "title",
+    "domain",
+    "difficulty",
+    "status",
+    "attempt_count",
+    "last_score_conceptual",
+    "last_score_practical",
+    "last_score_architect",
+    "last_score_communication",
+    "last_decision",
+    "prerequisites_unlocked",
+    "last_attempted_at",
+    "completed_at",
+]
+
+CLEAR_DECISIONS = {"pass", "borderline"}
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def ensure_runtime_dirs() -> None:
-    for path in [
-        DATA_DIR,
-        RUNS_DIR,
-        ASSESSMENTS_DIR / "answers",
-        ASSESSMENTS_DIR / "questions",
-        ASSESSMENTS_DIR / "evaluations",
-        NOTES_DIR / "concepts",
-        NOTES_DIR / "architect_lens",
-        NOTES_DIR / "refined",
-    ]:
-        path.mkdir(parents=True, exist_ok=True)
-
-    if not RUN_HISTORY_PATH.exists():
-        RUN_HISTORY_PATH.write_text("", encoding="utf-8")
-    if not WEAK_SPOTS_LOG_PATH.exists():
-        WEAK_SPOTS_LOG_PATH.write_text("topic_id,run_id,weak_spot,created_at\n", encoding="utf-8")
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or str(value).strip() == "":
+            return default
+        return int(value)
+    except Exception:
+        return default
 
 
-def _read_csv_rows(path: Path) -> List[Dict[str, str]]:
+def _load_topic_catalog() -> List[Dict[str, Any]]:
+    path = TOPICS_DIR / "topic_catalog.json"
     if not path.exists():
         return []
-    with path.open("r", encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data if isinstance(data, list) else []
 
 
-def _write_csv_rows(path: Path, rows: List[Dict[str, str]]) -> None:
-    if not rows:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(rows[0].keys())
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+def _default_progress_rows() -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for idx, topic in enumerate(_load_topic_catalog()):
+        rows.append(
+            {
+                "topic_id": str(topic.get("topic_id", "")),
+                "title": str(topic.get("title", "")),
+                "domain": str(topic.get("domain", "")),
+                "difficulty": str(topic.get("difficulty", "")),
+                "status": "not_started" if idx == 0 else "locked",
+                "attempt_count": "0",
+                "last_score_conceptual": "",
+                "last_score_practical": "",
+                "last_score_architect": "",
+                "last_score_communication": "",
+                "last_decision": "",
+                "prerequisites_unlocked": "true" if idx == 0 else "false",
+                "last_attempted_at": "",
+                "completed_at": "",
+            }
+        )
+    return rows
+
+
+def _write_progress_rows(rows: List[Dict[str, str]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with PROGRESS_TRACKER_PATH.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=PROGRESS_FIELDS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in PROGRESS_FIELDS})
 
 
-def _load_unlock_sequence() -> List[str]:
-    try:
-        data = json.loads(TOPIC_UNLOCK_RULES_PATH.read_text(encoding="utf-8"))
-        seq = data.get("sequence", [])
-        if isinstance(seq, list) and seq:
-            return [str(item) for item in seq]
-    except Exception:
-        pass
-    return [f"mlf_{i:03d}" for i in range(1, 11)]
+def _write_rewards_state(state: Dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    REWARDS_STATE_PATH.write_text(
+        json.dumps(normalize_rewards_state(state), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
-def normalize_progress_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """Force V1 progress into strict linear unlock order.
+def _fetch_artifacts_by_type(artifact_type: str) -> List[Dict[str, Any]]:
+    if not supabase_enabled():
+        return []
 
-    This prevents branch/random unlocks after Streamlit restarts or after old runs.
-    """
+    client = get_supabase_client()
+    if client is None:
+        return []
+
+    result = (
+        client.table("mlos_artifacts")
+        .select("run_id,topic_id,artifact_type,payload,created_at")
+        .eq("artifact_type", artifact_type)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return getattr(result, "data", None) or []
+
+
+def _fetch_runs() -> List[Dict[str, Any]]:
+    if not supabase_enabled():
+        return []
+
+    client = get_supabase_client()
+    if client is None:
+        return []
+
+    result = (
+        client.table("mlos_runs")
+        .select("run_id,topic_id,topic_title,phase,status,created_at,updated_at")
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return getattr(result, "data", None) or []
+
+
+def _rebuild_progress_from_evaluations() -> Tuple[List[Dict[str, str]], int]:
+    rows = _default_progress_rows()
     if not rows:
-        return rows
+        return rows, 0
 
-    by_id = {row.get("topic_id", ""): dict(row) for row in rows}
-    sequence = _load_unlock_sequence()
-    output: List[Dict[str, str]] = []
-    prior_complete = True
+    row_by_topic = {row["topic_id"]: row for row in rows}
+    evaluation_artifacts = _fetch_artifacts_by_type("evaluation")
+    run_status_by_id = {row.get("run_id"): row.get("status") for row in _fetch_runs()}
 
-    for topic_id in sequence:
-        row = by_id.get(topic_id)
-        if row is None:
+    processed = 0
+    for artifact in evaluation_artifacts:
+        topic_id = str(artifact.get("topic_id") or "").strip()
+        if topic_id not in row_by_topic:
             continue
 
-        status = (row.get("status") or "locked").strip()
-        is_complete = status == "completed"
+        payload = artifact.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
 
-        if is_complete:
+        row = row_by_topic[topic_id]
+        decision = str(payload.get("decision") or "").strip().lower()
+        run_status = str(run_status_by_id.get(artifact.get("run_id")) or "").strip().lower()
+        scores = payload.get("scores") or {}
+        created_at = str(artifact.get("created_at") or utc_now_iso())
+
+        row["attempt_count"] = str(_as_int(row.get("attempt_count"), 0) + 1)
+        row["last_decision"] = decision
+        row["last_attempted_at"] = created_at
+        row["last_score_conceptual"] = str(scores.get("conceptual_clarity", ""))
+        row["last_score_practical"] = str(scores.get("practical_reasoning", ""))
+        row["last_score_architect"] = str(scores.get("architect_reasoning", ""))
+        row["last_score_communication"] = str(scores.get("communication", ""))
+
+        if decision in CLEAR_DECISIONS or run_status == "completed":
+            row["status"] = "completed"
             row["prerequisites_unlocked"] = "true"
-            prior_complete = True
-        elif prior_complete:
-            row["prerequisites_unlocked"] = "true"
-            if status == "locked":
-                row["status"] = "not_started"
-            prior_complete = False
-        else:
-            row["prerequisites_unlocked"] = "false"
-            if status != "locked":
-                row["status"] = "locked"
-            prior_complete = False
+            row["completed_at"] = created_at
+        elif decision in {"revise", "fail_prereq"}:
+            # Keep the failed/revise topic as the next playable level after linear repair.
+            row["status"] = "not_started"
 
-        output.append(row)
+        processed += 1
 
-    # Preserve any unknown rows after known sequence, but lock them.
-    known = {row.get("topic_id") for row in output}
-    for row in rows:
-        if row.get("topic_id") not in known:
-            row = dict(row)
-            row["prerequisites_unlocked"] = "false"
-            row["status"] = "locked"
-            output.append(row)
-
-    return output
+    rows = _enforce_v1_linear_rows(rows)
+    return rows, processed
 
 
-def persist_progress_to_supabase(rows: Optional[List[Dict[str, str]]] = None) -> None:
-    try:
-        from src.utils.supabase_store import upsert_state
+def _enforce_v1_linear_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Strict V1: completed prefix, first incomplete unlocked, all later locked.
 
-        if rows is None:
-            rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
-        rows = normalize_progress_rows(rows)
-        upsert_state("progress_tracker", {"rows": rows, "updated_at": utc_now_iso()})
-    except Exception:
-        return
-
-
-def persist_rewards_to_supabase(state: Optional[Dict[str, Any]] = None) -> None:
-    try:
-        from src.utils.rewards import load_rewards_state, normalize_rewards_state
-        from src.utils.supabase_store import upsert_state
-
-        if state is None:
-            state = load_rewards_state(prefer_cloud=False)
-        state = normalize_rewards_state(state)
-        upsert_state("rewards_state", state)
-    except Exception:
-        return
-
-
-def hydrate_progress_from_supabase() -> bool:
-    try:
-        from src.utils.supabase_store import fetch_state
-
-        state = fetch_state("progress_tracker")
-        if not isinstance(state, dict):
-            return False
-        rows = state.get("rows")
-        if not isinstance(rows, list) or not rows:
-            return False
-        normalized = normalize_progress_rows([dict(row) for row in rows if isinstance(row, dict)])
-        _write_csv_rows(PROGRESS_TRACKER_PATH, normalized)
-        # Persist normalized version back to cloud so old branch unlocks get cleaned.
-        persist_progress_to_supabase(normalized)
-        return True
-    except Exception:
-        return False
-
-
-def hydrate_rewards_from_supabase() -> bool:
-    try:
-        from src.utils.rewards import normalize_rewards_state
-        from src.utils.supabase_store import fetch_state
-
-        state = fetch_state("rewards_state")
-        if not isinstance(state, dict):
-            return False
-        normalized = normalize_rewards_state(state)
-        REWARDS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        REWARDS_STATE_PATH.write_text(json.dumps(normalized, indent=2, ensure_ascii=False), encoding="utf-8")
-        persist_rewards_to_supabase(normalized)
-        return True
-    except Exception:
-        return False
-
-
-def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text or "", encoding="utf-8")
-
-
-def hydrate_run_from_supabase(run_id: str) -> bool:
-    try:
-        from src.utils.supabase_store import fetch_run, fetch_run_artifacts
-
-        run_row = fetch_run(run_id)
-        if not isinstance(run_row, dict):
-            return False
-
-        run_state = run_row.get("run_state") or {}
-        if not isinstance(run_state, dict):
-            return False
-
-        run_dir = RUNS_DIR / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        _write_json(run_dir / "run_state.json", run_state)
-
-        artifacts = fetch_run_artifacts(run_id)
-        for item in artifacts:
-            artifact_type = item.get("artifact_type")
-            payload = item.get("payload")
-            text_payload = item.get("text_payload")
-
-            if artifact_type == "selected_topic":
-                _write_json(run_dir / "selected_topic.json", payload)
-            elif artifact_type == "concept_note":
-                _write_json(run_dir / "concept_note.json", payload)
-            elif artifact_type == "architect_note":
-                _write_json(run_dir / "architect_note.json", payload)
-            elif artifact_type == "assessment":
-                _write_json(run_dir / "assessment.json", payload)
-            elif artifact_type == "answer_template":
-                answer_path = PROJECT_ROOT / run_state.get("artifacts", {}).get(
-                    "answers", f"assessments/answers/{run_id}_answers.json"
-                )
-                _write_json(answer_path, payload)
-            elif artifact_type == "answers":
-                _write_json(run_dir / "answers.json", payload)
-            elif artifact_type == "evaluation":
-                _write_json(run_dir / "evaluation.json", payload)
-            elif artifact_type == "answer_coaching":
-                _write_json(run_dir / "answer_coaching.json", payload)
-            elif artifact_type == "answer_coaching_error":
-                _write_json(run_dir / "answer_coaching_error.json", payload)
-            elif artifact_type == "rewards":
-                _write_json(run_dir / "rewards.json", payload)
-            elif artifact_type == "logs":
-                _write_text(run_dir / "logs.txt", text_payload or json.dumps(payload or {}, indent=2))
-
-        return True
-    except Exception:
-        return False
-
-
-def hydrate_latest_runs_from_supabase() -> None:
-    try:
-        from src.utils.supabase_store import fetch_latest_run_by_phase
-
-        for phase in ["awaiting_user_answers", "evaluation_complete"]:
-            row = fetch_latest_run_by_phase(phase)
-            if isinstance(row, dict) and row.get("run_id"):
-                hydrate_run_from_supabase(str(row["run_id"]))
-    except Exception:
-        return
-
-
-def bootstrap_cloud_state() -> Dict[str, Any]:
-    """Hydrate local runtime from Supabase, then mirror local fallback to Supabase.
-
-    Call once after authentication and before reading progress/rewards in the UI.
+    This repairs stale branch unlocks and old corrupted cloud state.
     """
-    ensure_runtime_dirs()
-    progress_loaded = hydrate_progress_from_supabase()
-    rewards_loaded = hydrate_rewards_from_supabase()
-    hydrate_latest_runs_from_supabase()
+    first_incomplete_seen = False
+    prior_gap = False
 
-    if not progress_loaded and PROGRESS_TRACKER_PATH.exists():
-        rows = normalize_progress_rows(_read_csv_rows(PROGRESS_TRACKER_PATH))
-        _write_csv_rows(PROGRESS_TRACKER_PATH, rows)
-        persist_progress_to_supabase(rows)
+    for row in rows:
+        status = str(row.get("status") or "").strip().lower()
 
-    if not rewards_loaded and REWARDS_STATE_PATH.exists():
-        persist_rewards_to_supabase()
+        if status == "completed" and not prior_gap:
+            row["status"] = "completed"
+            row["prerequisites_unlocked"] = "true"
+            continue
 
-    return {
-        "progress_from_cloud": progress_loaded,
-        "rewards_from_cloud": rewards_loaded,
-        "hydrated_at": utc_now_iso(),
+        # If a later topic says completed despite an earlier gap, V1 must not keep it completed.
+        if status == "completed" and prior_gap:
+            row["completed_at"] = ""
+
+        if not first_incomplete_seen:
+            first_incomplete_seen = True
+            prior_gap = True
+            row["status"] = "not_started"
+            row["prerequisites_unlocked"] = "true"
+        else:
+            prior_gap = True
+            row["status"] = "locked"
+            row["prerequisites_unlocked"] = "false"
+
+    return rows
+
+
+def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tuple[Dict[str, Any], int]:
+    reward_artifacts = _fetch_artifacts_by_type("rewards")
+    history: List[Dict[str, Any]] = []
+
+    for artifact in reward_artifacts:
+        payload = artifact.get("payload") or {}
+        if not isinstance(payload, dict):
+            continue
+        payload = dict(payload)
+        payload.setdefault("run_id", artifact.get("run_id"))
+        payload.setdefault("topic_id", artifact.get("topic_id"))
+        payload.setdefault("created_at", artifact.get("created_at"))
+        payload.setdefault("status", "completed" if payload.get("completed") else payload.get("decision"))
+        history.append(payload)
+
+    if history:
+        latest_total = max(_as_int(row.get("total_xp"), 0) for row in history)
+        state = {
+            "total_xp": latest_total,
+            "badges_unlocked": [],
+            "streaks": {
+                "current_completion_streak": 0,
+                "best_completion_streak": 0,
+            },
+            "topics": {},
+            "history": history,
+        }
+        return normalize_rewards_state(state), len(history)
+
+    # Fallback if reward artifacts are absent: rebuild minimal rewards from progress.
+    minimal_history: List[Dict[str, Any]] = []
+    running_xp = 0
+    for row in progress_rows:
+        if row.get("status") != "completed":
+            continue
+        scores = {
+            "conceptual_clarity": _as_int(row.get("last_score_conceptual"), 1),
+            "practical_reasoning": _as_int(row.get("last_score_practical"), 1),
+            "architect_reasoning": _as_int(row.get("last_score_architect"), 1),
+            "communication": _as_int(row.get("last_score_communication"), 1),
+        }
+        avg = sum(scores.values()) / 4
+        stars = max(1, min(5, round(avg)))
+        xp = 25 + stars * 5
+        running_xp += xp
+        minimal_history.append(
+            {
+                "run_id": f"rebuilt_{row['topic_id']}",
+                "topic_id": row["topic_id"],
+                "topic_title": row.get("title", row["topic_id"]),
+                "decision": row.get("last_decision") or "borderline",
+                "status": "completed",
+                "completed": True,
+                "xp_earned": xp,
+                "total_xp": running_xp,
+                "stars_earned": stars,
+                "best_stars": stars,
+                "badges_awarded": [],
+            }
+        )
+
+    state = {
+        "total_xp": running_xp,
+        "badges_unlocked": [],
+        "streaks": {
+            "current_completion_streak": 0,
+            "best_completion_streak": 0,
+        },
+        "topics": {},
+        "history": minimal_history,
     }
+    return normalize_rewards_state(state), len(minimal_history)
+
+
+def repair_cloud_state_on_startup(force: bool = True) -> Dict[str, Any]:
+    """Rebuild durable V1 state from Supabase run artifacts.
+
+    This prevents Streamlit Cloud sleep/restart from resetting progress and prevents
+    stale local files from overwriting good cloud history.
+    """
+    summary: Dict[str, Any] = {
+        "supabase_enabled": supabase_enabled(),
+        "progress_rebuilt": False,
+        "rewards_rebuilt": False,
+        "evaluation_artifacts_used": 0,
+        "reward_artifacts_used": 0,
+        "error": None,
+    }
+
+    if not supabase_enabled():
+        return summary
+
+    try:
+        progress_rows, eval_count = _rebuild_progress_from_evaluations()
+        if progress_rows:
+            _write_progress_rows(progress_rows)
+            upsert_state("progress_tracker", {"rows": progress_rows, "updated_at": utc_now_iso(), "source": "rebuilt_from_evaluations"})
+            summary["progress_rebuilt"] = True
+            summary["evaluation_artifacts_used"] = eval_count
+
+        rewards_state, reward_count = _rebuild_rewards_from_artifacts(progress_rows)
+        _write_rewards_state(rewards_state)
+        if reward_count > 0 or rewards_state.get("total_xp", 0) > 0:
+            upsert_state("rewards_state", {**rewards_state, "updated_at": utc_now_iso(), "source": "rebuilt_from_reward_artifacts"})
+        summary["rewards_rebuilt"] = True
+        summary["reward_artifacts_used"] = reward_count
+
+        # Keep a local empty run history file if it is missing.
+        RUN_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not RUN_HISTORY_PATH.exists():
+            RUN_HISTORY_PATH.write_text("", encoding="utf-8")
+
+    except Exception as exc:
+        summary["error"] = str(exc)
+
+    return summary
