@@ -3,18 +3,19 @@ from __future__ import annotations
 import json
 import os
 from functools import lru_cache
-from typing import Any, Dict, Optional
-
 from pathlib import Path
-from dotenv import load_dotenv
+from typing import Any, Dict, List, Optional
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(PROJECT_ROOT / ".env")
+from dotenv import load_dotenv
 
 try:
     import streamlit as st
-except Exception:
+except Exception:  # pragma: no cover
     st = None
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class SupabaseStoreError(Exception):
@@ -29,7 +30,6 @@ def _secret(key: str, default: Any = None) -> Any:
                 return value
         except Exception:
             pass
-
     return os.getenv(key, default)
 
 
@@ -45,7 +45,7 @@ def get_supabase_client():
     if not supabase_enabled():
         return None
 
-    url = str(_secret("SUPABASE_URL", "")).strip()
+    url = str(_secret("SUPABASE_URL", "")).strip().rstrip("/")
     key = str(_secret("SUPABASE_SERVICE_ROLE_KEY", "")).strip()
 
     if not url or not key:
@@ -66,10 +66,8 @@ def get_supabase_client():
 def _json_safe(payload: Any) -> Any:
     if payload is None:
         return None
-
     if hasattr(payload, "to_dict"):
         return payload.to_dict()
-
     try:
         json.dumps(payload)
         return payload
@@ -97,7 +95,6 @@ def upsert_run(
         "status": status,
         "run_state": _json_safe(run_state),
     }
-
     client.table("mlos_runs").upsert(row, on_conflict="run_id").execute()
 
 
@@ -119,11 +116,7 @@ def upsert_artifact(
         "payload": _json_safe(payload),
         "text_payload": text_payload,
     }
-
-    client.table("mlos_artifacts").upsert(
-        row,
-        on_conflict="run_id,artifact_type",
-    ).execute()
+    client.table("mlos_artifacts").upsert(row, on_conflict="run_id,artifact_type").execute()
 
 
 def upsert_state(state_key: str, payload: Dict[str, Any]) -> None:
@@ -131,11 +124,7 @@ def upsert_state(state_key: str, payload: Dict[str, Any]) -> None:
     if client is None:
         return
 
-    row = {
-        "state_key": state_key,
-        "payload": _json_safe(payload),
-    }
-
+    row = {"state_key": state_key, "payload": _json_safe(payload)}
     client.table("mlos_state").upsert(row, on_conflict="state_key").execute()
 
 
@@ -151,12 +140,11 @@ def fetch_state(state_key: str) -> Optional[Dict[str, Any]]:
         .limit(1)
         .execute()
     )
-
     data = getattr(result, "data", None) or []
     if not data:
         return None
-
-    return data[0].get("payload")
+    payload = data[0].get("payload")
+    return payload if isinstance(payload, dict) else None
 
 
 def append_event(
@@ -175,11 +163,10 @@ def append_event(
         "event_type": event_type,
         "payload": _json_safe(payload or {}),
     }
-
     client.table("mlos_events").insert(row).execute()
 
 
-def fetch_latest_runs(limit: int = 20):
+def fetch_latest_runs(limit: int = 20) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if client is None:
         return []
@@ -191,20 +178,40 @@ def fetch_latest_runs(limit: int = 20):
         .limit(limit)
         .execute()
     )
-
     return getattr(result, "data", None) or []
 
 
-def fetch_run_artifacts(run_id: str):
+def fetch_latest_run_by_phase(phase: str) -> Optional[Dict[str, Any]]:
+    client = get_supabase_client()
+    if client is None:
+        return None
+
+    result = (
+        client.table("mlos_runs")
+        .select("*")
+        .eq("phase", phase)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    data = getattr(result, "data", None) or []
+    return data[0] if data else None
+
+
+def fetch_run(run_id: str) -> Optional[Dict[str, Any]]:
+    client = get_supabase_client()
+    if client is None:
+        return None
+
+    result = client.table("mlos_runs").select("*").eq("run_id", run_id).limit(1).execute()
+    data = getattr(result, "data", None) or []
+    return data[0] if data else None
+
+
+def fetch_run_artifacts(run_id: str) -> List[Dict[str, Any]]:
     client = get_supabase_client()
     if client is None:
         return []
 
-    result = (
-        client.table("mlos_artifacts")
-        .select("*")
-        .eq("run_id", run_id)
-        .execute()
-    )
-
+    result = client.table("mlos_artifacts").select("*").eq("run_id", run_id).execute()
     return getattr(result, "data", None) or []

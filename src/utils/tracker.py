@@ -22,10 +22,8 @@ def utc_now_iso() -> str:
 def _read_csv_rows(file_path: Path) -> list[Dict[str, str]]:
     if not file_path.exists():
         raise TrackerError(f"CSV file not found: {file_path}")
-
     with file_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        return list(reader)
+        return list(csv.DictReader(f))
 
 
 def _write_csv_rows(file_path: Path, rows: list[Dict[str, str]], fieldnames: list[str]) -> None:
@@ -36,51 +34,50 @@ def _write_csv_rows(file_path: Path, rows: list[Dict[str, str]], fieldnames: lis
         writer.writerows(rows)
 
 
+def _normalize(rows: list[Dict[str, str]]) -> list[Dict[str, str]]:
+    try:
+        from src.utils.cloud_state import normalize_progress_rows
+
+        return normalize_progress_rows(rows)
+    except Exception:
+        return rows
+
+
 def _persist_progress_to_supabase(rows: list[Dict[str, str]]) -> None:
     try:
-        from src.utils.supabase_store import upsert_state
+        from src.utils.cloud_state import persist_progress_to_supabase
 
-        upsert_state("progress_tracker", {"rows": rows, "updated_at": utc_now_iso()})
+        persist_progress_to_supabase(rows)
     except Exception:
         return
 
 
 def hydrate_progress_from_supabase_if_available() -> bool:
-    """Pull persisted progress from Supabase into local CSV if available.
-
-    This protects Streamlit Cloud from losing progress after redeploys. It is safe and
-    non-blocking; if Supabase is disabled or unavailable, local CSV remains the source.
-    """
     try:
-        from src.utils.supabase_store import fetch_state
+        from src.utils.cloud_state import hydrate_progress_from_supabase
 
-        state = fetch_state("progress_tracker")
-        if not isinstance(state, dict):
-            return False
-        rows = state.get("rows")
-        if not isinstance(rows, list) or not rows:
-            return False
-        fieldnames = list(rows[0].keys())
-        _write_csv_rows(PROGRESS_TRACKER_PATH, rows, fieldnames)
-        return True
+        return hydrate_progress_from_supabase()
     except Exception:
         return False
 
 
 def read_progress_rows() -> list[Dict[str, str]]:
-    return _read_csv_rows(PROGRESS_TRACKER_PATH)
+    rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
+    rows = _normalize(rows)
+    return rows
 
 
 def write_progress_rows(rows: list[Dict[str, str]]) -> None:
     if not rows:
         raise TrackerError("Progress tracker rows are empty.")
+    rows = _normalize(rows)
     fieldnames = list(rows[0].keys())
     _write_csv_rows(PROGRESS_TRACKER_PATH, rows, fieldnames)
     _persist_progress_to_supabase(rows)
 
 
 def get_progress_row(topic_id: str) -> Optional[Dict[str, str]]:
-    rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
+    rows = read_progress_rows()
     for row in rows:
         if row["topic_id"] == topic_id:
             return row
@@ -99,11 +96,12 @@ def update_topic_status(
     prerequisites_unlocked: Optional[bool] = None,
     completed: bool = False,
 ) -> None:
-    rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
+    rows = read_progress_rows()
     if not rows:
         raise TrackerError("Progress tracker is empty.")
 
     found = False
+    now = utc_now_iso()
 
     for row in rows:
         if row["topic_id"] != topic_id:
@@ -113,32 +111,25 @@ def update_topic_status(
         row["status"] = status
 
         if attempt_increment:
-            current_attempts = int(row["attempt_count"] or 0)
+            current_attempts = int(row.get("attempt_count") or 0)
             row["attempt_count"] = str(current_attempts + 1)
 
         if conceptual_score is not None:
             row["last_score_conceptual"] = str(conceptual_score)
-
         if practical_score is not None:
             row["last_score_practical"] = str(practical_score)
-
         if architect_score is not None:
             row["last_score_architect"] = str(architect_score)
-
         if communication_score is not None:
             row["last_score_communication"] = str(communication_score)
-
         if decision is not None:
             row["last_decision"] = decision
-
         if prerequisites_unlocked is not None:
             row["prerequisites_unlocked"] = "true" if prerequisites_unlocked else "false"
 
-        row["last_attempted_at"] = utc_now_iso()
-
+        row["last_attempted_at"] = now
         if completed:
-            row["completed_at"] = utc_now_iso()
-
+            row["completed_at"] = now
         break
 
     if not found:
@@ -148,12 +139,11 @@ def update_topic_status(
 
 
 def unlock_topic(topic_id: str) -> None:
-    rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
+    rows = read_progress_rows()
     if not rows:
         raise TrackerError("Progress tracker is empty.")
 
     found = False
-
     for row in rows:
         if row["topic_id"] == topic_id:
             row["prerequisites_unlocked"] = "true"
@@ -168,147 +158,21 @@ def unlock_topic(topic_id: str) -> None:
     write_progress_rows(rows)
 
 
-def lock_topic(topic_id: str) -> None:
-    rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
-    if not rows:
-        raise TrackerError("Progress tracker is empty.")
-
-    found = False
-
-    for row in rows:
-        if row["topic_id"] == topic_id:
-            row["prerequisites_unlocked"] = "false"
-            if row["status"] != "completed":
-                row["status"] = "locked"
-            found = True
-            break
-
-    if not found:
-        raise TrackerError(f"Topic not found in progress tracker: {topic_id}")
-
-    write_progress_rows(rows)
-
-
-def unlock_next_sequential_topic(completed_topic_id: str) -> List[str]:
-    """V1 unlock logic: only unlock the immediate next topic in CSV order."""
-    rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
-    if not rows:
-        raise TrackerError("Progress tracker is empty.")
-
-    completed_index = None
-    for idx, row in enumerate(rows):
-        if row["topic_id"] == completed_topic_id:
-            completed_index = idx
-            break
-
-    if completed_index is None:
-        raise TrackerError(f"Topic not found in progress tracker: {completed_topic_id}")
-
-    unlocked: List[str] = []
-    next_index = completed_index + 1
-
-    for idx, row in enumerate(rows):
-        if row["status"] == "completed":
-            row["prerequisites_unlocked"] = "true"
-            continue
-
-        if idx == next_index:
-            row["prerequisites_unlocked"] = "true"
-            if row["status"] == "locked":
-                row["status"] = "not_started"
-                unlocked.append(row["topic_id"])
-            elif row["status"] in {"not_started", "in_progress", "revise", "borderline"}:
-                unlocked.append(row["topic_id"])
-            continue
-
-        if idx > next_index:
-            row["prerequisites_unlocked"] = "false"
-            row["status"] = "locked"
-
-    write_progress_rows(rows)
-    # Return only one topic for clean V1 behavior.
-    return unlocked[:1]
-
-
-def normalize_linear_progression() -> None:
-    """Repair accidental branch unlocks for V1.
-
-    Completed levels remain completed. The first incomplete level becomes unlocked.
-    All later incomplete levels are locked.
-    """
-    rows = _read_csv_rows(PROGRESS_TRACKER_PATH)
-    if not rows:
-        return
-
-    first_incomplete_seen = False
-    changed = False
-
-    for row in rows:
-        if row.get("status") == "completed":
-            if row.get("prerequisites_unlocked") != "true":
-                row["prerequisites_unlocked"] = "true"
-                changed = True
-            continue
-
-        if not first_incomplete_seen:
-            first_incomplete_seen = True
-            if row.get("prerequisites_unlocked") != "true":
-                row["prerequisites_unlocked"] = "true"
-                changed = True
-            if row.get("status") == "locked":
-                row["status"] = "not_started"
-                changed = True
-        else:
-            if row.get("prerequisites_unlocked") != "false":
-                row["prerequisites_unlocked"] = "false"
-                changed = True
-            if row.get("status") != "locked":
-                row["status"] = "locked"
-                changed = True
-
-    if changed:
-        write_progress_rows(rows)
-
-
-def log_weak_spot(
-    topic_id: str,
-    title: str,
-    weak_spot_category: str,
-    weak_spot_detail: str,
-    severity: str,
-    detected_from: str,
-    next_action: str,
-    status: str = "open",
-) -> None:
+def log_weak_spots(topic_id: str, run_id: str, weak_spots: List[str]) -> None:
+    WEAK_SPOTS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     file_exists = WEAK_SPOTS_LOG_PATH.exists()
 
     with WEAK_SPOTS_LOG_PATH.open("a", encoding="utf-8", newline="") as f:
-        fieldnames = [
-            "timestamp",
-            "topic_id",
-            "title",
-            "weak_spot_category",
-            "weak_spot_detail",
-            "severity",
-            "detected_from",
-            "next_action",
-            "status",
-        ]
+        fieldnames = ["topic_id", "run_id", "weak_spot", "created_at"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-        if not file_exists or WEAK_SPOTS_LOG_PATH.stat().st_size == 0:
+        if not file_exists:
             writer.writeheader()
-
-        writer.writerow(
-            {
-                "timestamp": utc_now_iso(),
-                "topic_id": topic_id,
-                "title": title,
-                "weak_spot_category": weak_spot_category,
-                "weak_spot_detail": weak_spot_detail,
-                "severity": severity,
-                "detected_from": detected_from,
-                "next_action": next_action,
-                "status": status,
-            }
-        )
+        for weak_spot in weak_spots:
+            writer.writerow(
+                {
+                    "topic_id": topic_id,
+                    "run_id": run_id,
+                    "weak_spot": weak_spot,
+                    "created_at": utc_now_iso(),
+                }
+            )

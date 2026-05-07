@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import streamlit as st
 
 from src.utils.rewards import get_topic_reward_state, load_rewards_state
+from src.utils.cloud_state import bootstrap_cloud_state
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -351,9 +352,16 @@ def run_module(
         cmd.extend(args)
 
     env = os.environ.copy()
-    openai_key = get_secret_value("OPENAI_API_KEY", None)
-    if openai_key and "OPENAI_API_KEY" not in env:
-        env["OPENAI_API_KEY"] = str(openai_key)
+    secret_keys = [
+        "OPENAI_API_KEY",
+        "SUPABASE_ENABLED",
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_ROLE_KEY",
+    ]
+    for key in secret_keys:
+        value = get_secret_value(key, None)
+        if value is not None and key not in env:
+            env[key] = str(value)
     if env_extra:
         env.update(env_extra)
 
@@ -818,6 +826,7 @@ def is_playable_status(status: str) -> bool:
 st.set_page_config(page_title="ML Architect Learning OS", layout="wide")
 inject_theme()
 require_login()
+cloud_bootstrap_status = bootstrap_cloud_state()
 
 st.markdown('<div class="main-title">ML Architect Learning OS</div>', unsafe_allow_html=True)
 st.markdown(

@@ -21,6 +21,7 @@ from src.agents.topic_selector import select_topic
 from src.schemas import RunArtifacts, RunScores, RunState, Topic
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
+from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -267,6 +268,42 @@ def find_active_awaiting_run() -> Optional[Path]:
     return sorted(candidates)[-1]
 
 
+
+def persist_lesson_start_to_supabase(
+    run_id: str,
+    topic: Topic,
+    final_run_state: RunState,
+    selected,
+    concept_note,
+    architect_note,
+    assessment,
+    answer_template: dict,
+) -> None:
+    run_state_payload = final_run_state.to_dict()
+    upsert_run(
+        run_id=run_id,
+        topic_id=topic.topic_id,
+        topic_title=topic.title,
+        phase=run_state_payload["phase"],
+        status=run_state_payload["status"],
+        run_state=run_state_payload,
+    )
+    upsert_artifact(run_id, "selected_topic", topic.topic_id, payload=selected.to_dict())
+    upsert_artifact(run_id, "concept_note", topic.topic_id, payload=concept_note.to_dict())
+    upsert_artifact(run_id, "architect_note", topic.topic_id, payload=architect_note.to_dict())
+    upsert_artifact(run_id, "assessment", topic.topic_id, payload=assessment.to_dict())
+    upsert_artifact(run_id, "answer_template", topic.topic_id, payload=answer_template)
+    append_event(
+        event_type="lesson_started",
+        run_id=run_id,
+        topic_id=topic.topic_id,
+        payload={
+            "selection_mode": selected.selection_mode,
+            "phase": run_state_payload["phase"],
+            "status": run_state_payload["status"],
+        },
+    )
+
 def main() -> None:
     active_run = find_active_awaiting_run()
     if active_run is not None:
@@ -353,7 +390,8 @@ def main() -> None:
 
     write_markdown(question_md_path, assessment_to_markdown(assessment))
     write_markdown(answer_md_path, answer_template_to_markdown(assessment))
-    write_json(answer_json_path, answer_template_to_json(assessment))
+    answer_template_payload = answer_template_to_json(assessment)
+    write_json(answer_json_path, answer_template_payload)
     write_log(run_id, "Assessment and answer templates generated")
 
     final_run_state = RunState(
@@ -374,6 +412,21 @@ def main() -> None:
     )
 
     write_json(f"runs/{run_id}/run_state.json", final_run_state)
+
+    try:
+        persist_lesson_start_to_supabase(
+            run_id=run_id,
+            topic=topic,
+            final_run_state=final_run_state,
+            selected=selected,
+            concept_note=concept_note,
+            architect_note=architect_note,
+            assessment=assessment,
+            answer_template=answer_template_payload,
+        )
+        write_log(run_id, "Supabase persistence completed for lesson start.")
+    except Exception as exc:
+        write_log(run_id, f"Supabase lesson-start persistence failed but local lesson remains available: {exc}")
 
     append_jsonl(
         "data/run_history.jsonl",
