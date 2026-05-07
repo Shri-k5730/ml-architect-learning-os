@@ -18,7 +18,17 @@ from src.agents.assessor import build_assessor_payload, generate_assessment
 from src.agents.teacher import build_teacher_payload
 from src.agents.teacher_quality import generate_teacher_note_with_quality_loop
 from src.agents.topic_selector import select_topic
-from src.schemas import RunArtifacts, RunScores, RunState, Topic
+from src.schemas import (
+    ArchitectNote,
+    Assessment,
+    AssessmentQuestion,
+    ConceptNote,
+    RunArtifacts,
+    RunScores,
+    RunState,
+    Topic,
+    UseCaseMapping,
+)
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
@@ -269,6 +279,144 @@ def find_active_awaiting_run() -> Optional[Path]:
 
 
 
+# -----------------------------
+# Deterministic fallbacks
+# -----------------------------
+def build_fallback_concept_note(topic: Topic) -> ConceptNote:
+    title_lower = topic.title.lower()
+    return ConceptNote(
+        topic_id=topic.topic_id,
+        title=topic.title,
+        simple_explanation=(
+            f"{topic.title} is a core ML concept that helps decide whether a model is learning useful patterns "
+            "or merely looking good in a narrow test setup. For V1, treat this as a practical system-design idea, "
+            "not a textbook definition."
+        ),
+        wrong_mental_model=(
+            f"A weak mental model is to treat {title_lower} as a theory term that only matters during model training."
+        ),
+        correct_mental_model=(
+            f"A stronger mental model is to use {title_lower} as a decision tool for model design, validation, "
+            "monitoring, and production risk control."
+        ),
+        tiny_example=(
+            "In a manufacturing defect model, a metric or design choice may look acceptable offline, but the model can still "
+            "fail when production conditions shift. The concept helps identify that gap before deployment."
+        ),
+        why_it_matters=(
+            "If this concept is misunderstood, the team may ship a model that appears acceptable in evaluation but fails "
+            "when data, process behavior, or operating conditions change."
+        ),
+        edge_case=(
+            "A production line receives unseen input patterns after a machine setting changes, and the model continues making "
+            "confident predictions without triggering a monitoring or fallback path."
+        ),
+        three_takeaways=[
+            f"{topic.title} should be understood through system behavior, not memorized as a definition.",
+            "A model can look useful offline and still fail when production conditions differ.",
+            "Architect-level reasoning connects the concept to validation, monitoring, and fallback design.",
+        ],
+    )
+
+
+def build_fallback_architect_note(topic: Topic, concept_note: ConceptNote, learner_profile: Dict[str, Any]) -> ArchitectNote:
+    priority_contexts = learner_profile.get("priority_contexts", []) or ["manufacturing_ai"]
+    return ArchitectNote(
+        topic_id=topic.topic_id,
+        architect_summary=(
+            f"For an ML Architect, {topic.title} matters because it influences how the model is evaluated, monitored, "
+            "and trusted after deployment. The concept should translate into concrete controls, not just explanation."
+        ),
+        design_implications=[
+            "Define the validation setup so it reflects the way the model will be used in production.",
+            "Add monitoring and fallback behavior for cases where model inputs or outputs move outside expected patterns.",
+        ],
+        common_mistakes=[
+            "Treating a good offline result as proof that the model is safe for production use.",
+            "Failing to connect the concept to concrete checks, alerts, thresholds, or review actions.",
+        ],
+        production_risks=[
+            "The system may silently make poor predictions when production data changes.",
+            "Teams may over-invest in model complexity without proving that it improves the operational decision.",
+        ],
+        interview_framing=(
+            f"I would explain {topic.title} by linking it to model reliability: how we validate the model, how we monitor it, "
+            "and what guardrails exist when production behavior differs from training or test assumptions."
+        ),
+        use_case_mapping=[
+            UseCaseMapping(
+                context=str(priority_contexts[0]),
+                relevance=(
+                    f"In {priority_contexts[0]}, this concept helps decide whether model behavior is reliable enough "
+                    "for operational use and what controls are needed around it."
+                ),
+            )
+        ],
+    )
+
+
+def build_fallback_assessment(topic: Topic, concept_note: ConceptNote, architect_note: ArchitectNote) -> Assessment:
+    return Assessment(
+        topic_id=topic.topic_id,
+        questions=[
+            AssessmentQuestion(
+                question_id="q1",
+                type="concept_check",
+                question=f"Explain {topic.title} in simple words without using a textbook definition.",
+                expected_focus=[
+                    "Clear explanation in plain language.",
+                    "Connection to model behavior or evaluation.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q2",
+                type="tiny_hands_on",
+                question=(
+                    "A defect prediction model performs well on historical data but starts missing defects after a machine "
+                    "setting changes. Use this scenario to explain how the concept applies."
+                ),
+                expected_focus=[
+                    "Identifies the gap between historical evaluation and production behavior.",
+                    "Explains what should be checked or redesigned.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q3",
+                type="failure_diagnosis",
+                question=(
+                    "What specific failure could happen in production if this concept is misunderstood by the ML team?"
+                ),
+                expected_focus=[
+                    "Names a concrete failure mechanism.",
+                    "Connects the failure to data, evaluation, monitoring, or deployment assumptions.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q4",
+                type="architect_decision",
+                question=(
+                    "As an ML Architect, what design decision or guardrail would you add because of this concept?"
+                ),
+                expected_focus=[
+                    "Specific design action such as monitoring, fallback, validation split, or threshold.",
+                    "Reason for why that action reduces production risk.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q5",
+                type="teachback",
+                question=(
+                    "Explain this concept to a non-technical stakeholder and include why it matters before deployment."
+                ),
+                expected_focus=[
+                    "Stakeholder-friendly language.",
+                    "Clear business or operational consequence.",
+                ],
+            ),
+        ],
+    )
+
+
 def persist_lesson_start_to_supabase(
     run_id: str,
     topic: Topic,
@@ -347,10 +495,20 @@ def main() -> None:
         learner_profile=learner_profile,
         weak_spots=[],
     )
-    concept_note, teacher_diagnostics = generate_teacher_note_with_quality_loop(
-        teacher_payload,
-        teacher_llm_callable,
-    )
+    try:
+        concept_note, teacher_diagnostics = generate_teacher_note_with_quality_loop(
+            teacher_payload,
+            teacher_llm_callable,
+        )
+    except Exception as exc:
+        concept_note = build_fallback_concept_note(topic)
+        teacher_diagnostics = {
+            "status": "fallback_used",
+            "error": str(exc),
+            "message": "Teacher generation failed. Deterministic fallback note was used so the lesson could continue.",
+        }
+        write_log(run_id, f"Teacher generation failed. Fallback concept note used: {exc}")
+
     write_json(f"runs/{run_id}/concept_note.json", concept_note)
     write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
     write_markdown(
@@ -367,7 +525,12 @@ def main() -> None:
         concept_note=concept_note,
         learner_profile=learner_profile,
     )
-    architect_note = generate_architect_note(architect_payload, architect_llm_callable)
+    try:
+        architect_note = generate_architect_note(architect_payload, architect_llm_callable)
+    except Exception as exc:
+        architect_note = build_fallback_architect_note(topic, concept_note, learner_profile)
+        write_log(run_id, f"Architect lens generation failed. Fallback architect note used: {exc}")
+
     write_json(f"runs/{run_id}/architect_note.json", architect_note)
     write_markdown(
         f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
@@ -381,7 +544,12 @@ def main() -> None:
         learner_profile=learner_profile,
         weak_spots=[],
     )
-    assessment = generate_assessment(assessor_payload, assessor_llm_callable)
+    try:
+        assessment = generate_assessment(assessor_payload, assessor_llm_callable)
+    except Exception as exc:
+        assessment = build_fallback_assessment(topic, concept_note, architect_note)
+        write_log(run_id, f"Assessment generation failed. Fallback mission set used: {exc}")
+
     write_json(f"runs/{run_id}/assessment.json", assessment)
 
     question_md_path = f"assessments/questions/{run_id}_questions.md"
