@@ -330,3 +330,7 @@ def repair_cloud_state_on_startup(force: bool = True) -> Dict[str, Any]:
         summary["error"] = str(exc)
 
     return summary
+
+# Backward-compatible alias for older app.py versions.
+def bootstrap_cloud_state(force: bool = True):
+    return repair_cloud_state_on_startup(force=force)
