@@ -14,7 +14,10 @@ import streamlit as st
 
 from src.utils.rewards import get_topic_reward_state, load_rewards_state
 from src.utils.cloud_state import repair_cloud_state_on_startup
-from src.utils.code_runner import run_code_exercise
+from src.agents.draft_verifier import verify_draft_answers
+from src.schemas import ArchitectNote, Assessment, ConceptNote
+from src.utils.validator import build_dataclass
+from src.utils.supabase_store import append_event, upsert_artifact
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -379,66 +382,10 @@ def start_lesson_for_topic(topic_id: Optional[str] = None) -> tuple[bool, str]:
 
 
 def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
-    answer_path.parent.mkdir(parents=True, exist_ok=True)
     answer_path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-
-
-def load_relative_json_or_none(relative_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not relative_path:
-        return None
-    path = PROJECT_ROOT / relative_path
-    if not path.exists():
-        return None
-    try:
-        data = load_json(path)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-
-
-def render_practice_result_summary(result: Dict[str, Any]) -> None:
-    summary = result.get("summary", {}) or {}
-    if summary.get("passed"):
-        st.success(
-            f"Code tests passed: {summary.get('total_passed', 0)}/{summary.get('total_tests', 0)}."
-        )
-    else:
-        st.error(
-            f"Code tests not cleared: {summary.get('total_passed', 0)}/{summary.get('total_tests', 0)}."
-        )
-        if result.get("error"):
-            st.code(result.get("error"))
-
-    visible_rows = []
-    for item in result.get("visible_tests", []) or []:
-        visible_rows.append(
-            {
-                "test": item.get("name"),
-                "passed": item.get("passed"),
-                "expected": item.get("expected"),
-                "actual": item.get("actual"),
-                "error": item.get("error"),
-            }
-        )
-    if visible_rows:
-        st.markdown("**Visible test results**")
-        st.dataframe(visible_rows, use_container_width=True)
-
-    hidden_total = summary.get("hidden_total", 0)
-    if hidden_total:
-        st.caption(
-            f"Hidden tests: {summary.get('hidden_passed', 0)}/{hidden_total} passed. Details are stored in run artifacts after evaluation."
-        )
-
-    interpretation = result.get("interpretation", {}) or {}
-    st.markdown("**Interpretation check**")
-    st.write(f"Score: {interpretation.get('score', '-')}/5")
-    missing = interpretation.get("missing_focus", []) or []
-    if missing:
-        st.warning("Missing interpretation focus: " + ", ".join(str(item) for item in missing))
 
 
 # -----------------------------
@@ -739,7 +686,8 @@ def render_answer_coaching_panel(run_dir: Path) -> None:
         st.info("No answer coaching entries found.")
         return
 
-    st.markdown("### Better Answers by Question")
+    st.markdown("### Coaching by Question")
+    st.caption("Better answers are shown only after final evaluation. They are samples for learning, not text to resubmit unchanged.")
 
     for item in coaching_items:
         qid = item.get("question_id", "")
@@ -750,6 +698,16 @@ def render_answer_coaching_panel(run_dir: Path) -> None:
             st.markdown("**Your Answer**")
             st.write(item.get("your_answer", ""))
 
+            findings = item.get("evidence_bound_findings", []) or []
+            if findings:
+                st.markdown("**Evidence-bound Findings**")
+                for finding in findings:
+                    st.warning(
+                        f"Evidence: `{finding.get('evidence', '')}`  \n"
+                        f"Issue: {finding.get('issue', '')}  \n"
+                        f"Correction: {finding.get('correction', '')}"
+                    )
+
             st.markdown("**What Was Missing**")
             missing_items = item.get("what_was_missing", [])
             if missing_items:
@@ -758,8 +716,8 @@ def render_answer_coaching_panel(run_dir: Path) -> None:
             else:
                 st.write("-")
 
-            st.markdown("**Better Answer**")
-            st.success(item.get("better_answer", ""))
+            with st.expander("Show stronger sample answer", expanded=False):
+                st.success(item.get("better_answer", ""))
 
             st.markdown("**Why This Is Better**")
             st.write(item.get("why_this_is_better", ""))
@@ -767,37 +725,58 @@ def render_answer_coaching_panel(run_dir: Path) -> None:
             st.markdown("**Architect Upgrade**")
             st.info(item.get("architect_upgrade", ""))
 
-def render_practice_coaching_panel(run_dir: Path) -> None:
-    result_path = run_dir / "practice_result.json"
-    coaching_path = run_dir / "practice_coaching.json"
 
-    if not result_path.exists() and not coaching_path.exists():
-        return
+def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
+    summary = verification.get("summary", {})
 
-    st.markdown("### Practical Code Lab Result")
+    st.markdown("### Draft Verification")
+    st.caption("This is copy-safe guidance. It gives gaps and next actions, not final answers.")
 
-    if result_path.exists():
-        result = load_json(result_path)
-        render_practice_result_summary(result)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Likely Avg", summary.get("likely_average", "-"))
+    c2.metric("Weak Drafts", summary.get("weak_count", "-"))
+    c3.metric("Partial Drafts", summary.get("partial_count", "-"))
 
-    if coaching_path.exists():
-        coaching = load_json(coaching_path)
-        with st.expander("Practical coaching", expanded=False):
-            st.markdown("**What to fix next**")
-            st.write(coaching.get("next_step", ""))
+    recommendation = summary.get("recommendation", "")
+    if summary.get("weak_count", 0):
+        st.error(recommendation)
+    elif summary.get("partial_count", 0):
+        st.warning(recommendation)
+    else:
+        st.success(recommendation)
 
-            missing = coaching.get("missing_interpretation_focus", []) or []
-            if missing:
-                st.markdown("**Missing interpretation focus**")
-                for item in missing:
-                    st.markdown(f"- {item}")
+    concepts = verification.get("core_concepts_to_check", []) or []
+    if concepts:
+        with st.expander("Concepts to verify before final submission", expanded=False):
+            for concept in concepts:
+                st.markdown(f"- {concept}")
 
-            st.markdown("**Better code**")
-            st.code(coaching.get("better_code", ""), language="python")
+    for item in verification.get("items", []) or []:
+        with st.expander(
+            f"{item.get('question_id', '')} . {item.get('verdict', '')} . likely {item.get('likely_score', '-')}/5",
+            expanded=item.get("likely_score", 5) <= 3,
+        ):
+            st.markdown("**Question**")
+            st.write(item.get("question", ""))
 
-            st.markdown("**Better interpretation**")
-            st.info(coaching.get("better_interpretation", ""))
+            misconceptions = item.get("misconceptions", []) or []
+            if misconceptions:
+                st.markdown("**Possible Misconception**")
+                for finding in misconceptions:
+                    st.warning(
+                        f"Evidence: `{finding.get('evidence', '')}`  \n"
+                        f"Issue: {finding.get('issue', '')}  \n"
+                        f"Correction: {finding.get('correction', '')}"
+                    )
 
+            gaps = item.get("coverage_gaps", []) or []
+            if gaps:
+                st.markdown("**Gaps to fix**")
+                for gap in gaps:
+                    st.markdown(f"- {gap}")
+
+            st.markdown("**Next improvement**")
+            st.info(item.get("next_improvement", ""))
 
 def render_level_card(
     row: Dict[str, str],
@@ -876,7 +855,6 @@ def render_latest_evaluation_panel() -> None:
             st.markdown(f"- {item}")
 
     render_answer_coaching_panel(eval_run)
-    render_practice_coaching_panel(eval_run)
 
     st.markdown("**Decision Reason**")
     st.write(evaluation.get("decision_reason", ""))
@@ -1021,6 +999,7 @@ with tabs[1]:
 
         concept_note = load_json(awaiting_run / "concept_note.json")
         architect_note = load_json(awaiting_run / "architect_note.json")
+        assessment_doc = load_json(awaiting_run / "assessment.json")
 
         answer_path = PROJECT_ROOT / run_state["artifacts"]["answers"]
         answers_doc = load_json(answer_path)
@@ -1103,75 +1082,64 @@ with tabs[1]:
                     }
                 )
 
-            artifacts = run_state.get("artifacts", {}) or {}
-            practice_exercise = load_relative_json_or_none(artifacts.get("practice_exercise"))
-            practice_submission_path = None
-            practice_submission = None
-            updated_practice_submission = None
-
-            if practice_exercise is not None:
-                practice_submission_rel = artifacts.get("practice_submission")
-                practice_submission_path = PROJECT_ROOT / practice_submission_rel if practice_submission_rel else awaiting_run / "practice_submission.json"
-                practice_submission = load_relative_json_or_none(practice_submission_rel) or {
-                    "topic_id": practice_exercise.get("topic_id"),
-                    "exercise_id": practice_exercise.get("exercise_id"),
-                    "status": "pending_user_submission",
-                    "code": practice_exercise.get("starter_code", ""),
-                    "interpretation": "",
-                }
-
-                st.divider()
-                st.subheader("Code Lab")
-                st.caption("This is a practical V2 exercise. Written answers alone are no longer enough.")
-                st.markdown(f"**{practice_exercise.get('title', 'Practice Exercise')}**")
-                st.write(practice_exercise.get("prompt", ""))
-
-                code_text = st.text_area(
-                    "Code submission",
-                    value=practice_submission.get("code", practice_exercise.get("starter_code", "")),
-                    height=210,
-                    key=f"{run_state['run_id']}_practice_code",
-                )
-                interpretation_text = st.text_area(
-                    "Practical interpretation",
-                    value=practice_submission.get("interpretation", ""),
-                    height=120,
-                    key=f"{run_state['run_id']}_practice_interpretation",
-                    help=practice_exercise.get("interpretation_prompt", "Explain what the result means."),
-                )
-
-                updated_practice_submission = {
-                    "topic_id": practice_exercise.get("topic_id"),
-                    "exercise_id": practice_exercise.get("exercise_id"),
-                    "status": "pending_evaluation",
-                    "code": code_text,
-                    "interpretation": interpretation_text,
-                }
-
-                if st.button("Run Code Exercise", use_container_width=True):
-                    save_answers(practice_submission_path, updated_practice_submission)
-                    result = run_code_exercise(practice_exercise, updated_practice_submission)
-                    render_practice_result_summary(result)
-
-            save_c1, save_c2 = st.columns([1, 1])
+            save_c1, save_c2, save_c3 = st.columns([1, 1, 1])
 
             with save_c1:
                 if st.button("Save Answers", use_container_width=True):
                     save_answers(answer_path, updated_answers)
-                    if updated_practice_submission is not None and practice_submission_path is not None:
-                        save_answers(practice_submission_path, updated_practice_submission)
                     st.success("Answers saved.")
 
             with save_c2:
+                if st.button("Verify Draft", use_container_width=True):
+                    save_answers(answer_path, updated_answers)
+                    try:
+                        verification = verify_draft_answers(
+                            concept_note=build_dataclass(concept_note, ConceptNote),
+                            architect_note=build_dataclass(architect_note, ArchitectNote),
+                            assessment=build_dataclass(assessment_doc, Assessment),
+                            answers_doc=updated_answers,
+                        )
+                        save_answers(awaiting_run / "draft_verification.json", verification)
+                        try:
+                            upsert_artifact(
+                                run_id=run_state["run_id"],
+                                artifact_type="draft_verification",
+                                topic_id=topic_id,
+                                payload=verification,
+                            )
+                            append_event(
+                                event_type="draft_verified",
+                                run_id=run_state["run_id"],
+                                topic_id=topic_id,
+                                payload=verification.get("summary", {}),
+                            )
+                        except Exception:
+                            pass
+                        st.session_state["draft_verification_run_id"] = run_state["run_id"]
+                        st.session_state["draft_verification"] = verification
+                        st.success("Draft verified. No better answers shown before final evaluation.")
+                    except Exception as exc:
+                        st.error(f"Draft verification failed: {exc}")
+
+            with save_c3:
                 if st.button("Save + Evaluate", use_container_width=True):
                     save_answers(answer_path, updated_answers)
-                    if updated_practice_submission is not None and practice_submission_path is not None:
-                        save_answers(practice_submission_path, updated_practice_submission)
-                    with st.spinner("Saving answers, running practical checks, and evaluating mission responses..."):
+                    with st.spinner("Saving answers and evaluating mission responses. This finalizes this attempt..."):
                         ok, output = run_module("src.evaluate_lesson")
                     record_action_result("Save + Evaluate", ok, output)
                     if ok:
+                        st.session_state.pop("draft_verification", None)
+                        st.session_state.pop("draft_verification_run_id", None)
                         st.rerun()
+
+            verification_to_show = None
+            if st.session_state.get("draft_verification_run_id") == run_state["run_id"]:
+                verification_to_show = st.session_state.get("draft_verification")
+            elif (awaiting_run / "draft_verification.json").exists():
+                verification_to_show = load_json(awaiting_run / "draft_verification.json")
+
+            if verification_to_show:
+                render_draft_verification_panel(verification_to_show)
 
 
 

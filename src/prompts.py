@@ -45,20 +45,23 @@ Rules:
 1. Explain only the selected concept.
 2. Use plain language, but keep the thinking sharp.
 3. Include one wrong mental model and one corrected mental model.
-4. Include exactly one tiny example.
+4. Include exactly one tiny example. Make it numeric or operational whenever the concept allows it.
 5. Prefer examples from the learner's priority contexts when possible.
 6. "Why it matters" must explain one concrete downstream consequence for evaluation, monitoring, deployment, or design.
 7. "Edge case" must describe one concrete failure mode caused by misunderstanding the concept.
 8. Do not mix multiple failure modes in one sentence.
 9. Keep the explanation compact and information-dense.
 10. The tone should feel like a serious private tutor, not public educational content.
-11. Return strict JSON only.
+11. Do not repeat the same idea across Concept, Why It Matters, Edge Case, and Takeaways. Each field must add new value.
+12. Do not say only what the concept is. Show how the learner would use it in a production review, metric decision, or model debugging discussion.
+13. Return strict JSON only.
 
 Target quality:
 - precise, not broad
 - concrete, not motivational
 - relevant to ML system behavior
 - useful for an ML Architect, not just a beginner
+- practical enough that the learner can apply it to a tiny data/metric scenario
 
 Output schema:
 {
@@ -143,7 +146,8 @@ Hands-on rules:
 - At least one mission must ask what can fail in production.
 - Prefer the learner's priority contexts when useful: manufacturing AI, predictive quality, recommendation systems, RAG systems, ML monitoring, agentic AI systems.
 - Keep missions short but not shallow.
-- The expected_focus field must tell the evaluator what a strong answer should include.
+- The tiny_hands_on mission must require a number, metric comparison, table interpretation, or concrete operational decision.
+- The expected_focus field must tell the evaluator what a strong answer should include. It must not be so generic that it could fit any topic.
 
 Return strict JSON only.
 
@@ -199,21 +203,18 @@ The assessment may include these mission types:
 - architect_decision
 - teachback
 
-Some lessons may also include a deterministic practice_exercise, practice_submission, and practice_result.
-If practice_result is present, use it as hard evidence for practical reasoning.
-Do not ignore failed tests or shallow interpretation.
-
 Evaluation rules:
 1. Score on conceptual clarity, practical reasoning, architect reasoning, and communication.
 2. For tiny_hands_on, evaluate the reasoning and decision path, not just wording.
-3. For practice_result, practical_reasoning should normally be <= 2 if code tests fail, and <= 3 if code passes but interpretation is weak.
-4. For failure_diagnosis, check whether the learner identifies the actual failure mechanism and not just a vague symptom.
-5. For architect_decision, check whether the learner names a concrete design, evaluation, monitoring, or deployment action.
-6. Quote specific weaknesses from the learner's answer where useful.
-7. Decide one action only: pass, borderline, revise, or fail_prereq.
-8. Borderline means the learner can progress but should improve the topic later.
-9. Rewrite only the parts of the note that need correction.
-10. Return strict JSON only.
+3. For failure_diagnosis, check whether the learner identifies the actual failure mechanism and not just a vague symptom.
+4. For architect_decision, check whether the learner names a concrete design, evaluation, monitoring, or deployment action.
+5. Quote specific weaknesses from the learner's answer where useful.
+6. Do not reward polished generic answers if they miss the question-specific practical point.
+7. Penalize answers that confuse ordinary-language terms with ML-specific meaning, such as bias as preference instead of systematic error.
+8. Decide one action only: pass, borderline, revise, or fail_prereq.
+7. Borderline means the learner can progress but should improve the topic later.
+8. Rewrite only the parts of the note that need correction.
+9. Return strict JSON only.
 
 Output schema:
 {
