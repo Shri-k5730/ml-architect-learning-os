@@ -32,6 +32,7 @@ from src.schemas import (
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
+from src.practice.exercise_bank import build_practice_submission_template, get_exercise_for_topic
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -426,6 +427,8 @@ def persist_lesson_start_to_supabase(
     architect_note,
     assessment,
     answer_template: dict,
+    practice_exercise: dict | None = None,
+    practice_submission_template: dict | None = None,
 ) -> None:
     run_state_payload = final_run_state.to_dict()
     upsert_run(
@@ -441,6 +444,10 @@ def persist_lesson_start_to_supabase(
     upsert_artifact(run_id, "architect_note", topic.topic_id, payload=architect_note.to_dict())
     upsert_artifact(run_id, "assessment", topic.topic_id, payload=assessment.to_dict())
     upsert_artifact(run_id, "answer_template", topic.topic_id, payload=answer_template)
+    if practice_exercise is not None:
+        upsert_artifact(run_id, "practice_exercise", topic.topic_id, payload=practice_exercise)
+    if practice_submission_template is not None:
+        upsert_artifact(run_id, "practice_submission_template", topic.topic_id, payload=practice_submission_template)
     append_event(
         event_type="lesson_started",
         run_id=run_id,
@@ -560,6 +567,18 @@ def main() -> None:
     write_markdown(answer_md_path, answer_template_to_markdown(assessment))
     answer_template_payload = answer_template_to_json(assessment)
     write_json(answer_json_path, answer_template_payload)
+
+    practice_exercise = get_exercise_for_topic(topic.topic_id)
+    practice_submission_template = build_practice_submission_template(topic.topic_id)
+    practice_exercise_path = None
+    practice_submission_path = None
+    if practice_exercise is not None and practice_submission_template is not None:
+        practice_exercise_path = f"runs/{run_id}/practice_exercise.json"
+        practice_submission_path = f"assessments/answers/{run_id}_practice_submission.json"
+        write_json(practice_exercise_path, practice_exercise)
+        write_json(practice_submission_path, practice_submission_template)
+        write_log(run_id, f"Practice coding exercise attached: {practice_exercise['exercise_id']}")
+
     write_log(run_id, "Assessment and answer templates generated")
 
     final_run_state = RunState(
@@ -574,6 +593,8 @@ def main() -> None:
             architect_note=f"runs/{run_id}/architect_note.json",
             assessment=f"runs/{run_id}/assessment.json",
             answers=answer_json_path,
+            practice_exercise=practice_exercise_path,
+            practice_submission=practice_submission_path,
         ),
         scores=RunScores(),
         next_action="await_user_answers",
@@ -591,6 +612,8 @@ def main() -> None:
             architect_note=architect_note,
             assessment=assessment,
             answer_template=answer_template_payload,
+            practice_exercise=practice_exercise,
+            practice_submission_template=practice_submission_template,
         )
         write_log(run_id, "Supabase persistence completed for lesson start.")
     except Exception as exc:

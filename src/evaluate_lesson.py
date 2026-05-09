@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from src.utils.supabase_store import append_event, upsert_artifact, upsert_run, upsert_state
+from src.utils.code_runner import build_practice_coaching, run_code_exercise
 
 import yaml
 
@@ -48,6 +49,9 @@ def persist_evaluation_to_supabase(
     rewards_summary: Dict[str, Any],
     answer_coaching: Dict[str, Any] | None,
     unlocked_topics: List[str],
+    practice_submission: Dict[str, Any] | None = None,
+    practice_result: Dict[str, Any] | None = None,
+    practice_coaching: Dict[str, Any] | None = None,
 ) -> None:
     upsert_run(
         run_id=run_id,
@@ -87,6 +91,30 @@ def persist_evaluation_to_supabase(
             payload=answer_coaching,
         )
 
+    if practice_submission is not None:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="practice_submission",
+            topic_id=topic_id,
+            payload=practice_submission,
+        )
+
+    if practice_result is not None:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="practice_result",
+            topic_id=topic_id,
+            payload=practice_result,
+        )
+
+    if practice_coaching is not None:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="practice_coaching",
+            topic_id=topic_id,
+            payload=practice_coaching,
+        )
+
     upsert_state(
         state_key="latest_evaluation",
         payload={
@@ -111,6 +139,7 @@ def persist_evaluation_to_supabase(
             "scores": final_run_state["scores"],
             "unlocked_topics": unlocked_topics,
             "reward_summary": rewards_summary,
+            "practice_summary": (practice_result or {}).get("summary", {}),
         },
     )
 
@@ -216,6 +245,35 @@ def load_user_answers(answer_json_path: Path) -> List[UserAnswer]:
 
     return user_answers
 
+
+def load_optional_json(relative_path: str | None) -> Dict[str, Any] | None:
+    if not relative_path:
+        return None
+    path = PROJECT_ROOT / relative_path
+    if not path.exists():
+        return None
+    data = load_json(path)
+    return data if isinstance(data, dict) else None
+
+
+def run_practice_if_present(run_state: Dict[str, Any], run_id: str) -> tuple[Dict[str, Any] | None, Dict[str, Any] | None, Dict[str, Any] | None]:
+    artifacts = run_state.get("artifacts", {}) or {}
+    practice_exercise = load_optional_json(artifacts.get("practice_exercise"))
+    practice_submission = load_optional_json(artifacts.get("practice_submission"))
+
+    if practice_exercise is None or practice_submission is None:
+        return practice_exercise, practice_submission, None
+
+    practice_result = run_code_exercise(practice_exercise, practice_submission)
+    practice_coaching = build_practice_coaching(practice_exercise, practice_result)
+    write_json(f"runs/{run_id}/practice_result.json", practice_result)
+    write_json(f"runs/{run_id}/practice_coaching.json", practice_coaching)
+    write_log(
+        run_id,
+        f"Practice exercise evaluated: {practice_result.get('status')} {practice_result.get('summary', {})}",
+    )
+    return practice_exercise, practice_submission, practice_result
+
 def answer_coaching_to_markdown(answer_coaching: Dict[str, Any]) -> str:
     lines = [
         f"---",
@@ -312,6 +370,49 @@ next_action: {evaluation.next_action}
 """
 
 
+def apply_practice_gate_to_evaluation(
+    evaluation: EvaluationResult,
+    practice_result: Dict[str, Any] | None,
+) -> EvaluationResult:
+    if practice_result is None:
+        return evaluation
+
+    summary = practice_result.get("summary", {}) or {}
+    interpretation = practice_result.get("interpretation", {}) or {}
+    tests_passed = bool(summary.get("passed"))
+    interpretation_score = int(interpretation.get("score", 1) or 1)
+
+    if not tests_passed:
+        evaluation.scores.practical_reasoning = min(evaluation.scores.practical_reasoning, 2)
+        if "Coding exercise tests failed, so the practical implementation is not yet reliable." not in evaluation.weak_spots:
+            evaluation.weak_spots.append(
+                "Coding exercise tests failed, so the practical implementation is not yet reliable."
+            )
+        evaluation.decision = "revise"
+        evaluation.next_action = "retry_same_topic"
+        evaluation.decision_reason = (
+            evaluation.decision_reason
+            + " Practical gate applied: code tests did not pass, so this lesson must be revised."
+        )
+        return evaluation
+
+    if interpretation_score < 3:
+        evaluation.scores.practical_reasoning = min(evaluation.scores.practical_reasoning, 3)
+        if "Coding exercise passed, but the production interpretation is still too shallow." not in evaluation.weak_spots:
+            evaluation.weak_spots.append(
+                "Coding exercise passed, but the production interpretation is still too shallow."
+            )
+        if evaluation.decision == "pass":
+            evaluation.decision = "borderline"
+            evaluation.next_action = "reinforce_and_continue"
+            evaluation.decision_reason = (
+                evaluation.decision_reason
+                + " Practical gate applied: implementation passed, but interpretation needs strengthening."
+            )
+
+    return evaluation
+
+
 def unlock_dependent_topics(topic_catalog: List[Topic], completed_topic_id: str) -> List[str]:
     unlocked: List[str] = []
 
@@ -352,6 +453,10 @@ def main() -> None:
     answers_relative_path = run_state["artifacts"]["answers"]
     answer_json_path = PROJECT_ROOT / answers_relative_path
     user_answers = load_user_answers(answer_json_path)
+    practice_exercise, practice_submission, practice_result = run_practice_if_present(run_state, run_id)
+    practice_coaching = None
+    if practice_exercise is not None and practice_result is not None:
+        practice_coaching = build_practice_coaching(practice_exercise, practice_result)
 
     evaluator_llm_callable = build_llm_callable("evaluator_refiner")
 
@@ -362,8 +467,12 @@ def main() -> None:
         user_answers=user_answers,
         scoring_rubric=scoring_rubric,
         learner_profile=learner_profile,
+        practice_exercise=practice_exercise,
+        practice_submission=practice_submission,
+        practice_result=practice_result,
     )
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
+    evaluation = apply_practice_gate_to_evaluation(evaluation, practice_result)
 
     answer_coaching = None
 
@@ -403,6 +512,9 @@ def main() -> None:
             f"assessments/evaluations/{topic_id}_answer_coaching.md",
             answer_coaching_to_markdown(answer_coaching),
         )
+
+    if practice_coaching is not None:
+        write_json(f"runs/{run_id}/practice_coaching.json", practice_coaching)
 
     allow_borderline_progression = bool(
         learner_profile.get("progression_rules", {}).get("allow_borderline_progression", True)
@@ -488,7 +600,10 @@ topic_id: {topic_id}
             ),
             "rewards": f"runs/{run_id}/rewards.json",
             "refined_note": f"notes/refined/{topic_id}_refined.md",
-            
+            "practice_exercise": run_state.get("artifacts", {}).get("practice_exercise"),
+            "practice_submission": run_state.get("artifacts", {}).get("practice_submission"),
+            "practice_result": f"runs/{run_id}/practice_result.json" if practice_result is not None else None,
+            "practice_coaching": f"runs/{run_id}/practice_coaching.json" if practice_coaching is not None else None,
         },
         "scores": {
             "conceptual_clarity": evaluation.scores.conceptual_clarity,
@@ -511,6 +626,9 @@ topic_id: {topic_id}
             rewards_summary=rewards_summary,
             answer_coaching=answer_coaching,
             unlocked_topics=unlocked_topics,
+            practice_submission=practice_submission,
+            practice_result=practice_result,
+            practice_coaching=practice_coaching,
         )
         write_log(run_id, "Supabase persistence completed for evaluation.")
     except Exception as exc:

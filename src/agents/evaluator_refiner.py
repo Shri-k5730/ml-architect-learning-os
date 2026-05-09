@@ -28,8 +28,11 @@ def build_evaluator_refiner_payload(
     user_answers: List[UserAnswer],
     scoring_rubric: Dict[str, Any],
     learner_profile: Dict[str, Any],
+    practice_exercise: Dict[str, Any] | None = None,
+    practice_submission: Dict[str, Any] | None = None,
+    practice_result: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    return {
+    payload = {
         "topic_id": concept_note.topic_id,
         "concept_note": concept_note.to_dict(),
         "architect_note": architect_note.to_dict(),
@@ -40,6 +43,13 @@ def build_evaluator_refiner_payload(
         "learning_goal": learner_profile.get("learning_goal", ""),
         "priority_contexts": learner_profile.get("priority_contexts", []),
     }
+    if practice_exercise is not None:
+        payload["practice_exercise"] = practice_exercise
+    if practice_submission is not None:
+        payload["practice_submission"] = practice_submission
+    if practice_result is not None:
+        payload["practice_result"] = practice_result
+    return payload
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
