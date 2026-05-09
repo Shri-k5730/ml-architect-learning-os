@@ -203,18 +203,23 @@ The assessment may include these mission types:
 - architect_decision
 - teachback
 
+Some lessons may also include a deterministic practice_exercise, practice_submission, and practice_result.
+If practice_result is present, use it as hard evidence for practical reasoning.
+Do not ignore failed tests or shallow interpretation.
+
 Evaluation rules:
 1. Score on conceptual clarity, practical reasoning, architect reasoning, and communication.
 2. For tiny_hands_on, evaluate the reasoning and decision path, not just wording.
-3. For failure_diagnosis, check whether the learner identifies the actual failure mechanism and not just a vague symptom.
-4. For architect_decision, check whether the learner names a concrete design, evaluation, monitoring, or deployment action.
-5. Quote specific weaknesses from the learner's answer where useful.
-6. Do not reward polished generic answers if they miss the question-specific practical point.
-7. Penalize answers that confuse ordinary-language terms with ML-specific meaning, such as bias as preference instead of systematic error.
-8. Decide one action only: pass, borderline, revise, or fail_prereq.
-7. Borderline means the learner can progress but should improve the topic later.
-8. Rewrite only the parts of the note that need correction.
-9. Return strict JSON only.
+3. For practice_result, practical_reasoning should normally be <= 2 if code tests fail, and <= 3 if code passes but interpretation is weak.
+4. For failure_diagnosis, check whether the learner identifies the actual failure mechanism and not just a vague symptom.
+5. For architect_decision, check whether the learner names a concrete design, evaluation, monitoring, or deployment action.
+6. Quote specific weaknesses from the learner's answer where useful.
+7. Do not reward polished generic answers if they miss the question-specific practical point.
+8. Penalize answers that confuse ordinary-language terms with ML-specific meaning, such as bias as preference instead of systematic error.
+9. Decide one action only: pass, borderline, revise, or fail_prereq.
+10. Borderline means the learner can progress but should improve the topic later.
+11. Rewrite only the parts of the note that need correction.
+12. Return strict JSON only.
 
 Output schema:
 {
