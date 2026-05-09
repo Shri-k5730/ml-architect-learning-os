@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import ast
 import math
-import signal
-from contextlib import contextmanager
-from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class CodeRunnerError(Exception):
@@ -29,6 +28,9 @@ SAFE_BUILTINS = {
     "sum": sum,
     "tuple": tuple,
     "zip": zip,
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "Exception": Exception,
 }
 
 BLOCKED_NAMES = {
@@ -72,24 +74,28 @@ BLOCKED_MODULES = {
 }
 
 
-@contextmanager
-def _time_limit(seconds: int):
-    # Streamlit Cloud/Linux supports SIGALRM. Windows local development does not.
-    # On Windows we still run the AST-restricted code path, but skip the alarm.
-    if not hasattr(signal, "SIGALRM"):
-        yield
-        return
+def _run_with_timeout(func: Callable[[], Any], timeout_seconds: int) -> Any:
+    """Run a small restricted callable with a timeout that works in Streamlit threads.
 
-    def _handler(signum, frame):  # pragma: no cover - signal callback
-        raise TimeoutError("Code execution timed out.")
+    Python's signal.alarm only works in the main interpreter thread. Streamlit can
+    execute button callbacks outside that thread, so signal-based timeouts fail
+    with: "signal only works in main thread of the main interpreter".
 
-    previous = signal.signal(signal.SIGALRM, _handler)
-    signal.alarm(max(1, int(seconds)))
+    This uses a worker thread instead. It is designed for tiny educational
+    exercises, not arbitrary untrusted long-running programs.
+    """
+    timeout_seconds = max(1, int(timeout_seconds or 2))
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func)
     try:
-        yield
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError("Code execution timed out.") from exc
     finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous)
+        # wait=False prevents the Streamlit request from hanging on a timed-out
+        # user function. cancel_futures is available on supported Python versions.
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _validate_source(source: str) -> None:
@@ -127,8 +133,10 @@ def _load_function(source: str, function_name: str, timeout_seconds: int) -> Any
     _validate_source(source)
     namespace: Dict[str, Any] = {"__builtins__": SAFE_BUILTINS}
 
-    with _time_limit(timeout_seconds):
+    def _compile_and_exec() -> None:
         exec(compile(source, "<practice_submission>", "exec"), namespace, namespace)
+
+    _run_with_timeout(_compile_and_exec, timeout_seconds)
 
     fn = namespace.get(function_name)
     if not callable(fn):
@@ -156,8 +164,7 @@ def _run_one_test(fn: Any, test: Dict[str, Any], timeout_seconds: int) -> Dict[s
         kwargs = {}
 
     try:
-        with _time_limit(timeout_seconds):
-            actual = fn(*args, **kwargs)
+        actual = _run_with_timeout(lambda: fn(*args, **kwargs), timeout_seconds)
         passed = _is_expected(actual, expected)
         error = "" if passed else f"Expected {expected!r}, got {actual!r}."
     except Exception as exc:
