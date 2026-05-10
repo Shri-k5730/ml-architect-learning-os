@@ -336,6 +336,30 @@ def find_latest_run(phase: Optional[str] = None) -> Optional[Path]:
     return sorted(candidates, key=lambda p: p.name)[-1]
 
 
+def topic_status_map(progress_rows: List[Dict[str, str]]) -> Dict[str, str]:
+    return {str(row.get("topic_id", "")): str(row.get("status", "")) for row in progress_rows}
+
+
+def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str, str]]) -> bool:
+    """Ignore accidental active runs for topics already completed.
+
+    Patch 007 exposed a selector bug that could create a new awaiting run for
+    mlf_001 even after it was completed. The dirty run should not block the next
+    checkpoint once durable progress says that topic is completed.
+    """
+    if run_dir is None:
+        return False
+    try:
+        state = load_json(run_dir / "run_state.json")
+    except Exception:
+        return False
+    topic_id = str(state.get("topic_id") or "")
+    phase = str(state.get("phase") or "")
+    if phase != "awaiting_user_answers" or not topic_id:
+        return False
+    return topic_status_map(progress_rows).get(topic_id) == "completed"
+
+
 def get_latest_evaluation_run() -> Optional[Path]:
     return find_latest_run("evaluation_complete")
 
@@ -794,9 +818,10 @@ def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
     st.caption("This is copy-safe guidance. It gives gaps and next actions, not final answers.")
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Likely Avg", summary.get("likely_average", "-"))
+    c1.metric("Readiness Avg", summary.get("readiness_average", summary.get("likely_average", "-")))
     c2.metric("Weak Drafts", summary.get("weak_count", "-"))
     c3.metric("Partial Drafts", summary.get("partial_count", "-"))
+    st.caption("Readiness Avg is not a star prediction. Final scoring may be stricter after full evaluation.")
 
     recommendation = summary.get("recommendation", "")
     if summary.get("weak_count", 0):
@@ -814,8 +839,8 @@ def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
 
     for item in verification.get("items", []) or []:
         with st.expander(
-            f"{item.get('question_id', '')} . {item.get('verdict', '')} . likely {item.get('likely_score', '-')}/5",
-            expanded=item.get("likely_score", 5) <= 3,
+            f"{item.get('question_id', '')} . {item.get('verdict', '')} . readiness {item.get('readiness_score', item.get('likely_score', '-'))}/5",
+            expanded=item.get("readiness_score", item.get("likely_score", 5)) <= 3,
         ):
             st.markdown("**Question**")
             st.write(item.get("question", ""))
@@ -999,8 +1024,15 @@ catalog_source, catalog_count = load_topic_catalog_source()
 metrics = compute_overall_metrics(progress_rows)
 
 awaiting_run = find_latest_run("awaiting_user_answers")
-latest_run = find_latest_run()
+stale_awaiting_run = None
+if is_stale_awaiting_run(awaiting_run, progress_rows):
+    stale_awaiting_run = awaiting_run
+    awaiting_run = None
+
 latest_eval_run = get_latest_evaluation_run()
+latest_run = find_latest_run()
+if stale_awaiting_run is not None and latest_run == stale_awaiting_run and latest_eval_run is not None:
+    latest_run = latest_eval_run
 
 if "selected_topic_id" not in st.session_state:
     st.session_state.selected_topic_id = None
@@ -1016,6 +1048,12 @@ top_c6.metric("Badges", len(rewards_state.get("badges_unlocked", [])))
 if awaiting_run is not None:
     active_state = load_json(awaiting_run / "run_state.json")
     st.warning(f"Active lesson in progress . {active_state['topic_id']} . Finish active lesson first.")
+elif stale_awaiting_run is not None:
+    stale_state = load_json(stale_awaiting_run / "run_state.json")
+    st.info(
+        f"Ignored stale active run for completed topic . {stale_state.get('topic_id')} . "
+        "Start Next Lesson will use repaired Supabase progress."
+    )
 
 action_c1, action_c2 = st.columns([1, 1])
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import csv
+import json
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -16,6 +17,10 @@ PROGRESS_TRACKER_PATH = PROJECT_ROOT / "data" / "progress_tracker.csv"
 
 class TopicSelectorError(Exception):
     """Raised when topic selection fails."""
+
+
+def _allow_completed_restart() -> bool:
+    return str(os.getenv("ML_OS_ALLOW_RESTART_COMPLETED", "false")).strip().lower() in {"1", "true", "yes", "y"}
 
 
 def _read_topic_catalog() -> List[Topic]:
@@ -62,6 +67,12 @@ def _select_requested_topic(
             f"Requested topic '{requested_topic_id}' is locked and cannot be started yet."
         )
 
+    if status == "completed" and not _allow_completed_restart():
+        raise TopicSelectorError(
+            f"Requested topic '{requested_topic_id}' is already completed. "
+            "Set ML_OS_ALLOW_RESTART_COMPLETED=true only for deliberate replay/testing."
+        )
+
     return SelectedTopic(
         selected_topic_id=topic.topic_id,
         reason=f"Manually selected topic '{topic.topic_id}' with current status '{status}'.",
@@ -71,10 +82,11 @@ def _select_requested_topic(
 
 
 def select_topic(requested_topic_id: Optional[str] = None) -> SelectedTopic:
-    """Select the next V1 topic.
+    """Select the next playable topic from repaired durable progress.
 
-    V1 is intentionally linear. Completed topics are skipped. The first unlocked
-    incomplete topic is selected. Branch unlocks and borderline loops are V2 scope.
+    Completed topics are skipped. The first unlocked incomplete item in catalog
+    order is selected. This includes checkpoints, so mlf_010 should lead to
+    checkpoint_ml_foundations_001, not a replay of mlf_001.
     """
     topic_catalog = _read_topic_catalog()
     progress_rows = _read_progress_rows()
@@ -95,7 +107,7 @@ def select_topic(requested_topic_id: Optional[str] = None) -> SelectedTopic:
             topic = _get_topic_by_id(topic_catalog, row["topic_id"])
             return SelectedTopic(
                 selected_topic_id=topic.topic_id,
-                reason=f"Selected next sequential V1 topic '{topic.topic_id}'.",
+                reason=f"Selected next unlocked curriculum item '{topic.topic_id}'.",
                 selection_mode="next_unlocked",
                 prerequisite_gap=None,
             )

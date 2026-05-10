@@ -102,6 +102,77 @@ def _progress_row_to_supabase(row: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
+def _completed_count(rows: list[Dict[str, str]]) -> int:
+    return sum(1 for row in rows if str(row.get("status") or "").strip().lower() == "completed")
+
+
+def _unlocked_incomplete_count(rows: list[Dict[str, str]]) -> int:
+    count = 0
+    for row in rows:
+        status = str(row.get("status") or "").strip().lower()
+        unlocked = str(row.get("prerequisites_unlocked") or "").strip().lower() == "true"
+        if unlocked and status != "completed":
+            count += 1
+    return count
+
+
+def _fetch_state_progress_rows() -> list[Dict[str, str]]:
+    """Read the repaired progress snapshot from mlos_state.
+
+    Patch 006 introduced mlos_learner_progress, but real hosted history already
+    lives in mlos_state + artifacts. If the table is stale, this snapshot is the
+    safer source because cloud_state rebuilds it from evaluation artifacts.
+    """
+    try:
+        from src.utils.supabase_store import fetch_state, supabase_enabled
+
+        if not supabase_enabled():
+            return []
+        state = fetch_state("progress_tracker")
+        if not isinstance(state, dict):
+            return []
+        rows = state.get("rows")
+        if not isinstance(rows, list) or not rows:
+            return []
+        return [_normalize_progress_row(row) for row in rows if isinstance(row, dict)]
+    except Exception:
+        return []
+
+
+def _choose_best_progress_rows(
+    table_rows: list[Dict[str, str]],
+    state_rows: list[Dict[str, str]],
+) -> list[Dict[str, str]]:
+    """Choose the least stale progress source.
+
+    A stale mlos_learner_progress table can regress the learner to mlf_001.
+    Prefer whichever source has more completed lessons; if tied, prefer the
+    table because it is the newer normalized V2 structure.
+    """
+    if not table_rows and not state_rows:
+        return []
+    if not table_rows:
+        return state_rows
+    if not state_rows:
+        return table_rows
+
+    table_completed = _completed_count(table_rows)
+    state_completed = _completed_count(state_rows)
+
+    if state_completed > table_completed:
+        return state_rows
+    if table_completed > state_completed:
+        return table_rows
+
+    # Tie-breaker: prefer the source with an unlocked incomplete item. If only
+    # one source has a playable next item, use that one. Otherwise use table.
+    table_unlocked = _unlocked_incomplete_count(table_rows)
+    state_unlocked = _unlocked_incomplete_count(state_rows)
+    if state_unlocked > table_unlocked:
+        return state_rows
+    return table_rows
+
+
 def _compose_progress_from_supabase_tables() -> list[Dict[str, str]]:
     try:
         from src.utils.supabase_store import fetch_learner_progress_rows, supabase_enabled
@@ -158,33 +229,41 @@ def _persist_progress_to_supabase(rows: list[Dict[str, str]]) -> None:
 
 
 def hydrate_progress_from_supabase_if_available() -> bool:
-    """Pull persisted progress from Supabase into local CSV cache if available.
+    """Pull the best persisted progress source from Supabase into CSV cache.
 
-    The live source should be Supabase. The CSV is only a local cache for modules
-    that still expect file-like access.
+    Supabase has two progress representations during the V2 transition:
+    - mlos_learner_progress: normalized table, but it can be stale after migration.
+    - mlos_state.progress_tracker: repaired snapshot rebuilt from artifacts.
+
+    The selector must never trust a stale table that sends the learner back to
+    mlf_001 after ten completed lessons.
     """
-    try:
-        rows = _compose_progress_from_supabase_tables()
-        if rows:
-            _write_csv_rows(PROGRESS_TRACKER_PATH, rows, PROGRESS_FIELDS)
-            return True
-    except Exception:
-        pass
+    table_rows: list[Dict[str, str]] = []
+    state_rows: list[Dict[str, str]] = []
 
     try:
-        from src.utils.supabase_store import fetch_state
-
-        state = fetch_state("progress_tracker")
-        if not isinstance(state, dict):
-            return False
-        rows = state.get("rows")
-        if not isinstance(rows, list) or not rows:
-            return False
-        normalized = [_normalize_progress_row(row) for row in rows]
-        _write_csv_rows(PROGRESS_TRACKER_PATH, normalized, PROGRESS_FIELDS)
-        return True
+        table_rows = _compose_progress_from_supabase_tables()
     except Exception:
+        table_rows = []
+
+    try:
+        state_rows = _fetch_state_progress_rows()
+    except Exception:
+        state_rows = []
+
+    rows = _choose_best_progress_rows(table_rows, state_rows)
+    if not rows:
         return False
+
+    normalized = [_normalize_progress_row(row) for row in rows]
+    _write_csv_rows(PROGRESS_TRACKER_PATH, normalized, PROGRESS_FIELDS)
+
+    # If the repaired state is ahead of the normalized table, backfill the table.
+    # This makes the next app/subprocess read consistent.
+    if _completed_count(normalized) > _completed_count(table_rows):
+        _persist_progress_to_supabase(normalized)
+
+    return True
 
 
 def _enforce_strict_linear_rows(rows: list[Dict[str, str]]) -> list[Dict[str, str]]:

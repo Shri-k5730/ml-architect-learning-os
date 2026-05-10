@@ -80,19 +80,38 @@ def _type_gap(question_type: str, answer: str) -> List[str]:
     return gaps[:2]
 
 
-def _likely_score(answer: str, gap_count: int, misconception_count: int) -> int:
+def _vague_language_penalty(answer: str) -> int:
+    answer_l = _normalize(answer)
+    vague_terms = ["average", "good", "bad", "better outcome", "balance between", "properly", "accurately set"]
+    return 1 if any(term in answer_l for term in vague_terms) else 0
+
+
+def _readiness_score(answer: str, gap_count: int, misconception_count: int) -> int:
+    """Conservative draft readiness score, not a star prediction.
+
+    The previous verifier was too generous: directionally correct drafts were
+    labelled strong, while final evaluation penalized missing practical and
+    architect detail. This score intentionally under-promises.
+    """
     word_count = len((answer or "").split())
+    vague_penalty = _vague_language_penalty(answer)
+
     if word_count < 20:
         return 1
     if misconception_count >= 2:
+        return 2
+    if misconception_count == 1 and gap_count >= 1:
         return 2
     if gap_count >= 3:
         return 2
     if gap_count == 2:
         return 3
     if gap_count == 1:
-        return 4
-    return 4 if word_count < 180 else 5
+        return 3 if vague_penalty else 4
+
+    # No obvious gap does not mean 5-star readiness. Full evaluation is still
+    # stricter and checks coherence across all answers.
+    return 4
 
 
 def _verdict(score: int) -> str:
@@ -100,9 +119,7 @@ def _verdict(score: int) -> str:
         return "Weak draft"
     if score == 3:
         return "Partial draft"
-    if score == 4:
-        return "Good draft"
-    return "Strong draft"
+    return "Evaluable draft"
 
 
 def _next_action(question_type: str, gaps: List[str], misconceptions: List[Dict[str, str]]) -> str:
@@ -143,14 +160,15 @@ def verify_draft_answers(
             if gap not in all_gaps:
                 all_gaps.append(gap)
 
-        score = _likely_score(answer, len(all_gaps), len(concept_findings))
+        score = _readiness_score(answer, len(all_gaps), len(concept_findings))
         items.append(
             {
                 "question_id": question.question_id,
                 "question": question.question,
                 "question_type": question.type,
                 "verdict": _verdict(score),
-                "likely_score": score,
+                "readiness_score": score,
+                "likely_score": score,  # backward-compatible UI key; not a star prediction
                 "coverage_gaps": all_gaps[:4],
                 "misconceptions": concept_findings,
                 "next_improvement": _next_action(question.type, all_gaps, concept_findings),
@@ -158,27 +176,30 @@ def verify_draft_answers(
             }
         )
 
-    weak_items = [item for item in items if item["likely_score"] <= 2]
-    partial_items = [item for item in items if item["likely_score"] == 3]
-    likely_avg = round(sum(item["likely_score"] for item in items) / len(items), 2) if items else 0
+    weak_items = [item for item in items if item["readiness_score"] <= 2]
+    partial_items = [item for item in items if item["readiness_score"] == 3]
+    readiness_avg = round(sum(item["readiness_score"] for item in items) / len(items), 2) if items else 0
+    four_star_ready = (not weak_items and not partial_items and readiness_avg >= 4)
 
     return {
         "topic_id": concept_note.topic_id,
         "topic_title": concept_note.title,
-        "mode": "draft_verification_copy_safe",
+        "mode": "draft_verification_copy_safe_calibrated",
         "summary": {
-            "likely_average": likely_avg,
+            "readiness_average": readiness_avg,
+            "likely_average": readiness_avg,  # backward compatibility; not a star prediction
             "weak_count": len(weak_items),
             "partial_count": len(partial_items),
+            "four_star_ready": four_star_ready,
             "recommendation": (
                 "Do not submit yet. Fix the weak drafts first."
                 if weak_items
-                else "This is probably evaluable. Improve the partial items before final submission."
+                else "Not 4-star ready yet. Improve the partial drafts before final submission."
                 if partial_items
-                else "This is ready for final evaluation."
+                else "Evaluable. This still does not guarantee 4 stars; final evaluation checks consistency across all answers."
             ),
         },
         "core_concepts_to_check": profile.get("core_concepts", [])[:5],
         "items": items,
-        "note": "Verification gives hints only. Better answers are deliberately hidden until final evaluation is locked.",
+        "note": "Verification gives hints only. Readiness is not a star prediction. Better answers are deliberately hidden until final evaluation is locked.",
     }
