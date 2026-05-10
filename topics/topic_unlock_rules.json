@@ -1,5 +1,5 @@
 {
-  "v1_rule": "strict_linear_progression",
+  "v2_rule": "strict_linear_progression_with_module_checkpoints",
   "sequence": [
     "mlf_001",
     "mlf_002",
@@ -10,11 +10,74 @@
     "mlf_007",
     "mlf_008",
     "mlf_009",
-    "mlf_010"
+    "mlf_010",
+    "checkpoint_ml_foundations_001",
+    "mlf_011",
+    "mlf_012",
+    "mlf_013",
+    "mlf_014",
+    "mlf_015",
+    "mlf_016",
+    "mlf_017",
+    "mlf_018",
+    "mlf_019",
+    "mlf_020"
   ],
   "borderline_counts_as_completed": true,
   "manual_replay_allowed": false,
-  "branching_disabled_until_v2": true,
+  "branching_disabled_until_v3": true,
+  "module_gates": {
+    "ml_foundations_gate": {
+      "after": "mlf_010",
+      "checkpoint_topic_id": "checkpoint_ml_foundations_001",
+      "unlocks_on_completion": "mlf_011",
+      "covered_topics": [
+        "mlf_001",
+        "mlf_002",
+        "mlf_003",
+        "mlf_004",
+        "mlf_005",
+        "mlf_006",
+        "mlf_007",
+        "mlf_008",
+        "mlf_009",
+        "mlf_010"
+      ],
+      "purpose": "Verify ML foundations synthesis before advanced ML topics are unlocked."
+    }
+  },
+  "blocks": {
+    "ml_foundations": [
+      "mlf_001",
+      "mlf_002",
+      "mlf_003",
+      "mlf_004",
+      "mlf_005",
+      "mlf_006",
+      "mlf_007",
+      "mlf_008",
+      "mlf_009",
+      "mlf_010"
+    ],
+    "ml_foundations_checkpoint": [
+      "checkpoint_ml_foundations_001"
+    ],
+    "advanced_ml": [
+      "mlf_011",
+      "mlf_012",
+      "mlf_013",
+      "mlf_014",
+      "mlf_015",
+      "mlf_016",
+      "mlf_017",
+      "mlf_018",
+      "mlf_019",
+      "mlf_020"
+    ]
+  },
+  "future_blocks": {
+    "deep_learning_and_neural_networks": "planned_after_mlf_020"
+  },
   "unlock_logic": {
     "pass": "complete_current_and_unlock_next_sequential",
     "borderline": "complete_current_with_improvement_signal_and_unlock_next_sequential",

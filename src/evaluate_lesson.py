@@ -27,6 +27,7 @@ from src.schemas import (
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.rewards import apply_evaluation_rewards
+from src.utils.curriculum_catalog import load_topic_catalog_dicts
 from src.utils.tracker import get_progress_row, unlock_topic, update_topic_status
 from src.utils.validator import build_dataclass
 
@@ -205,9 +206,9 @@ def get_latest_awaiting_run() -> str:
 
 
 def load_topic_catalog() -> List[Topic]:
-    data = load_json(TOPICS_DIR / "topic_catalog.json")
-    if not isinstance(data, list):
-        raise EvaluateLessonError("topic_catalog.json must contain a list.")
+    data = load_topic_catalog_dicts(prefer_supabase=True)
+    if not isinstance(data, list) or not data:
+        raise EvaluateLessonError("No topic catalog found. Check Supabase mlos_topic_catalog or local topics/topic_catalog.json.")
     return [Topic(**item) for item in data]
 
 

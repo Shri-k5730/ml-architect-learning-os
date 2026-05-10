@@ -60,7 +60,89 @@ PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
             },
         ],
         "timeout_seconds": 2,
-    }
+    },
+    "checkpoint_ml_foundations_001": {
+        "exercise_id": "checkpoint_ml_foundations_precision_recall_v1",
+        "topic_id": "checkpoint_ml_foundations_001",
+        "title": "Compute precision and recall for a defect model",
+        "skill_focus": [
+            "confusion matrix reasoning",
+            "precision recall calculation",
+            "production metric decision",
+        ],
+        "prompt": (
+            "Implement calculate_precision_recall(y_true, y_pred, positive_label=1). "
+            "It must return a dictionary with keys 'precision' and 'recall'. Then explain which metric matters more "
+            "for a defect detection go-live decision and why."
+        ),
+        "function_name": "calculate_precision_recall",
+        "starter_code": """def calculate_precision_recall(y_true, y_pred, positive_label=1):
+    # Return {"precision": value, "recall": value}
+    # precision = TP / (TP + FP)
+    # recall = TP / (TP + FN)
+    pass
+""",
+        "interpretation_prompt": (
+            "In 5-7 lines, explain the precision/recall result as a production decision. "
+            "Name the business risk, the error type, and what threshold or monitoring control you would define."
+        ),
+        "expected_interpretation_focus": [
+            "Recall exposes missed actual defects or false negatives.",
+            "Precision exposes how many flagged defects are truly defective.",
+            "The metric priority must reflect the cost of false negatives versus false positives.",
+            "Production approval should define threshold, monitoring, and owner response.",
+        ],
+        "visible_tests": [
+            {
+                "name": "checkpoint_confusion_matrix",
+                "args": [[1] * 12 + [1] * 28 + [0] * 8 + [0] * 952, [1] * 12 + [0] * 28 + [1] * 8 + [0] * 952],
+                "expected": {"precision": 0.6, "recall": 0.3},
+                "reason": "TP=12, FP=8, FN=28, TN=952, so precision=12/20 and recall=12/40.",
+            },
+            {
+                "name": "all_positive_caught",
+                "args": [[1, 1, 0, 0], [1, 1, 0, 1]],
+                "expected": {"precision": 0.6666666666666666, "recall": 1.0},
+                "reason": "Two true positives, one false positive, and no false negatives.",
+            },
+        ],
+        "hidden_tests": [
+            {
+                "name": "no_positive_predictions",
+                "args": [[1, 0, 1, 0], [0, 0, 0, 0]],
+                "expected": {"precision": 0.0, "recall": 0.0},
+                "reason": "No positive predictions and two missed positives.",
+            },
+            {
+                "name": "custom_positive_label",
+                "args": [["defect", "ok", "defect", "ok"], ["defect", "defect", "ok", "ok"]],
+                "kwargs": {"positive_label": "defect"},
+                "expected": {"precision": 0.5, "recall": 0.5},
+                "reason": "The function must respect the positive_label argument.",
+            },
+        ],
+        "timeout_seconds": 2,
+        "better_code": """def calculate_precision_recall(y_true, y_pred, positive_label=1):
+    tp = fp = fn = 0
+    for actual, predicted in zip(y_true, y_pred):
+        if predicted == positive_label and actual == positive_label:
+            tp += 1
+        elif predicted == positive_label and actual != positive_label:
+            fp += 1
+        elif predicted != positive_label and actual == positive_label:
+            fn += 1
+
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    return {"precision": precision, "recall": recall}
+""",
+        "better_interpretation": (
+            "The model may have high overall accuracy because most parts are non-defective, but recall shows whether actual defects are being caught. "
+            "For a defect detection go-live decision, low recall means false negatives are passing through the system. "
+            "That is usually more dangerous than a moderate number of false alarms. "
+            "I would set a minimum defect-class recall threshold, review precision to control inspection workload, and monitor both metrics after deployment."
+        ),
+    },
 }
 
 

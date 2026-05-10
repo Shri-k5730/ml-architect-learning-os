@@ -145,6 +145,21 @@ def _load_function(source: str, function_name: str, timeout_seconds: int) -> Any
 
 
 def _is_expected(actual: Any, expected: Any) -> bool:
+    """Compare test outputs with float tolerance and nested structure support."""
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return False
+        if set(actual.keys()) != set(expected.keys()):
+            return False
+        return all(_is_expected(actual[key], expected[key]) for key in expected.keys())
+
+    if isinstance(expected, (list, tuple)):
+        if not isinstance(actual, (list, tuple)):
+            return False
+        if len(actual) != len(expected):
+            return False
+        return all(_is_expected(a, e) for a, e in zip(actual, expected))
+
     if isinstance(expected, float) or isinstance(actual, float):
         try:
             return math.isclose(float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9)
@@ -189,11 +204,11 @@ def _interpretation_score(interpretation: str, expected_focus: List[str]) -> Dic
     missing: List[str] = []
 
     keyword_groups: List[Tuple[str, List[str]]] = [
-        ("minority/positive cases", ["minority", "positive", "rare", "imbalance", "imbalanced"]),
-        ("business cost", ["business", "cost", "risk", "impact", "expensive"]),
-        ("error type", ["false negative", "false positive", "missed", "wrong"]),
+        ("minority/positive cases", ["minority", "positive", "rare", "imbalance", "imbalanced", "defect", "defective", "failure"]),
+        ("business cost", ["business", "cost", "risk", "impact", "expensive", "warranty", "rework", "quality", "go-live"]),
+        ("error type", ["false negative", "false positive", "missed", "wrong", "false alarm", "miss"]),
         ("better metrics", ["precision", "recall", "confusion", "f1", "class-specific", "class specific"]),
-        ("production decision", ["production", "threshold", "monitor", "decision", "alert"]),
+        ("production decision", ["production", "threshold", "monitor", "decision", "alert", "deploy", "deployment", "owner", "response"]),
     ]
 
     for label, keywords in keyword_groups:
@@ -303,11 +318,19 @@ def build_practice_coaching(exercise: Dict[str, Any], result: Dict[str, Any]) ->
     missing_focus = interpretation.get("missing_focus", []) or []
 
     if passed and not missing_focus:
-        next_step = "Good. Now connect this metric to precision/recall trade-offs in the next lesson."
+        next_step = "Good. Now connect the metric result to the production decision and threshold policy."
     elif passed:
         next_step = "The code is correct. Strengthen the interpretation by naming business cost, error type, and the metric you would add."
     else:
-        next_step = "Fix the function first. Count matching label/prediction positions, divide by number of examples, and return 0.0 for empty input."
+        next_step = "Fix the function first. Use the formula in the exercise prompt, then explain what the metric means for production."
+
+    default_better_code = """def calculate_accuracy(y_true, y_pred):\n    if not y_true:\n        return 0.0\n    correct = sum(1 for actual, predicted in zip(y_true, y_pred) if actual == predicted)\n    return correct / len(y_true)\n"""
+    default_better_interpretation = (
+        "The 0.8 accuracy looks good, but the model missed the only positive case. "
+        "In production, that could be the exact case the business cares about, such as a defect, fraud, or failure risk. "
+        "I would inspect the confusion matrix and add recall/precision for the positive class before trusting the model. "
+        "The metric should match the cost of false negatives and false positives."
+    )
 
     return {
         "topic_id": exercise.get("topic_id"),
@@ -317,12 +340,7 @@ def build_practice_coaching(exercise: Dict[str, Any], result: Dict[str, Any]) ->
         "test_summary": summary,
         "interpretation_score": interpretation.get("score", 1),
         "missing_interpretation_focus": missing_focus,
-        "better_code": """def calculate_accuracy(y_true, y_pred):\n    if not y_true:\n        return 0.0\n    correct = sum(1 for actual, predicted in zip(y_true, y_pred) if actual == predicted)\n    return correct / len(y_true)\n""",
-        "better_interpretation": (
-            "The 0.8 accuracy looks good, but the model missed the only positive case. "
-            "In production, that could be the exact case the business cares about, such as a defect, fraud, or failure risk. "
-            "I would inspect the confusion matrix and add recall/precision for the positive class before trusting the model. "
-            "The metric should match the cost of false negatives and false positives."
-        ),
+        "better_code": exercise.get("better_code") or default_better_code,
+        "better_interpretation": exercise.get("better_interpretation") or default_better_interpretation,
         "next_step": next_step,
     }

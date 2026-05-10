@@ -12,7 +12,9 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
+from src.utils.curriculum_catalog import load_topic_catalog_source
 from src.utils.rewards import get_topic_reward_state, load_rewards_state
+from src.utils.tracker import read_progress_rows
 from src.utils.cloud_state import repair_cloud_state_on_startup
 from src.utils.code_runner import run_code_exercise
 from src.agents.draft_verifier import verify_draft_answers
@@ -41,12 +43,14 @@ def load_text(path: Path) -> str:
 
 
 def load_progress_tracker() -> List[Dict[str, str]]:
-    tracker_path = DATA_DIR / "progress_tracker.csv"
-    if not tracker_path.exists():
-        return []
-
-    with tracker_path.open("r", encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
+    try:
+        return read_progress_rows()
+    except Exception:
+        tracker_path = DATA_DIR / "progress_tracker.csv"
+        if not tracker_path.exists():
+            return []
+        with tracker_path.open("r", encoding="utf-8", newline="") as f:
+            return list(csv.DictReader(f))
 
 
 def load_run_history() -> List[Dict[str, Any]]:
@@ -991,6 +995,7 @@ if cloud_repair_summary.get("error"):
 
 progress_rows = load_progress_tracker()
 rewards_state = load_rewards_state()
+catalog_source, catalog_count = load_topic_catalog_source()
 metrics = compute_overall_metrics(progress_rows)
 
 awaiting_run = find_latest_run("awaiting_user_answers")
@@ -1042,6 +1047,7 @@ if latest_run:
     st.caption(
         f"Latest run: {state.get('run_id')} | topic: {state.get('topic_id')} | phase: {state.get('phase')} | status: {state.get('status')}"
     )
+st.caption(f"Curriculum source: {catalog_source} . topics: {catalog_count}")
 
 render_last_action_result()
 

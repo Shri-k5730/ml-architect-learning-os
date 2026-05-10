@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.utils.curriculum_catalog import load_topic_catalog_dicts, seed_supabase_catalog_from_local_if_empty
 from src.utils.rewards import normalize_rewards_state
-from src.utils.supabase_store import get_supabase_client, supabase_enabled, upsert_state
+from src.utils.supabase_store import get_supabase_client, supabase_enabled, upsert_learner_progress_rows, upsert_state
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,7 @@ PROGRESS_FIELDS = [
     "last_score_practical",
     "last_score_architect",
     "last_score_communication",
+    "last_score_coding",
     "last_decision",
     "prerequisites_unlocked",
     "last_attempted_at",
@@ -51,11 +53,8 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 
 def _load_topic_catalog() -> List[Dict[str, Any]]:
-    path = TOPICS_DIR / "topic_catalog.json"
-    if not path.exists():
-        return []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, list) else []
+    # Supabase is the V2 curriculum source of truth. Local JSON is only fallback.
+    return load_topic_catalog_dicts(prefer_supabase=True)
 
 
 def _default_progress_rows() -> List[Dict[str, str]]:
@@ -73,6 +72,7 @@ def _default_progress_rows() -> List[Dict[str, str]]:
                 "last_score_practical": "",
                 "last_score_architect": "",
                 "last_score_communication": "",
+                "last_score_coding": "",
                 "last_decision": "",
                 "prerequisites_unlocked": "true" if idx == 0 else "false",
                 "last_attempted_at": "",
@@ -90,6 +90,49 @@ def _write_progress_rows(rows: List[Dict[str, str]]) -> None:
         for row in rows:
             writer.writerow({field: row.get(field, "") for field in PROGRESS_FIELDS})
 
+
+
+
+def _none_if_empty(value: Any) -> Optional[str]:
+    value = str(value or "").strip()
+    return value or None
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _persist_progress_rows_to_supabase_table(rows: List[Dict[str, str]]) -> None:
+    payload = []
+    for row in rows:
+        payload.append(
+            {
+                "topic_id": row["topic_id"],
+                "status": row.get("status") or "locked",
+                "attempt_count": _as_int(row.get("attempt_count"), 0),
+                "last_run_id": None,
+                "last_decision": _none_if_empty(row.get("last_decision")),
+                "last_score_conceptual": _int_or_none(row.get("last_score_conceptual")),
+                "last_score_practical": _int_or_none(row.get("last_score_practical")),
+                "last_score_architect": _int_or_none(row.get("last_score_architect")),
+                "last_score_communication": _int_or_none(row.get("last_score_communication")),
+                "last_score_coding": _int_or_none(row.get("last_score_coding")),
+                "completed_at": _none_if_empty(row.get("completed_at")),
+                "last_attempted_at": _none_if_empty(row.get("last_attempted_at")),
+                "updated_at": utc_now_iso(),
+            }
+        )
+    try:
+        upsert_learner_progress_rows(payload)
+    except Exception:
+        # Table may not be created yet. mlos_state still preserves the JSON copy.
+        return
 
 def _write_rewards_state(state: Dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -300,6 +343,7 @@ def repair_cloud_state_on_startup(force: bool = True) -> Dict[str, Any]:
         "rewards_rebuilt": False,
         "evaluation_artifacts_used": 0,
         "reward_artifacts_used": 0,
+        "catalog_seed": None,
         "error": None,
     }
 
@@ -307,10 +351,13 @@ def repair_cloud_state_on_startup(force: bool = True) -> Dict[str, Any]:
         return summary
 
     try:
+        summary["catalog_seed"] = seed_supabase_catalog_from_local_if_empty()
+
         progress_rows, eval_count = _rebuild_progress_from_evaluations()
         if progress_rows:
             _write_progress_rows(progress_rows)
             upsert_state("progress_tracker", {"rows": progress_rows, "updated_at": utc_now_iso(), "source": "rebuilt_from_evaluations"})
+            _persist_progress_rows_to_supabase_table(progress_rows)
             summary["progress_rebuilt"] = True
             summary["evaluation_artifacts_used"] = eval_count
 

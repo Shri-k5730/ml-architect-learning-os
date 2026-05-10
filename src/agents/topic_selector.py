@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from src.schemas import SelectedTopic, Topic
+from src.utils.curriculum_catalog import load_topic_catalog_dicts
+from src.utils.tracker import read_progress_rows
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -18,19 +19,17 @@ class TopicSelectorError(Exception):
 
 
 def _read_topic_catalog() -> List[Topic]:
-    if not TOPIC_CATALOG_PATH.exists():
-        raise TopicSelectorError(f"Topic catalog not found: {TOPIC_CATALOG_PATH}")
-
-    data = json.loads(TOPIC_CATALOG_PATH.read_text(encoding="utf-8"))
+    data = load_topic_catalog_dicts(prefer_supabase=True)
+    if not data:
+        raise TopicSelectorError("No topic catalog found. Check Supabase mlos_topic_catalog or local topics/topic_catalog.json.")
     return [Topic(**item) for item in data]
 
 
 def _read_progress_rows() -> List[Dict[str, str]]:
-    if not PROGRESS_TRACKER_PATH.exists():
-        raise TopicSelectorError(f"Progress tracker not found: {PROGRESS_TRACKER_PATH}")
-
-    with PROGRESS_TRACKER_PATH.open("r", encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
+    rows = read_progress_rows()
+    if not rows:
+        raise TopicSelectorError("Progress tracker is empty. Check Supabase mlos_learner_progress or mlos_state.")
+    return rows
 
 
 def _get_topic_by_id(topic_catalog: List[Topic], topic_id: str) -> Topic:

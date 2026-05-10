@@ -41,3 +41,5 @@ data/rewards_state.json
 # notes/
 # assessments/answers/
 # assessments/evaluations/
+.csv
+.sql

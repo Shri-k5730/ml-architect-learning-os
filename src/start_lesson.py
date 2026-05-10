@@ -33,6 +33,12 @@ from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
 from src.practice.exercise_bank import build_practice_submission_template, get_exercise_for_topic
+from src.checkpoints.checkpoint_bank import (
+    build_checkpoint_architect_note,
+    build_checkpoint_assessment,
+    build_checkpoint_concept_note,
+    is_checkpoint_topic,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -67,9 +73,9 @@ def load_json(file_path: Path) -> Any:
 
 
 def load_topic_catalog() -> List[Topic]:
-    data = load_json(TOPICS_DIR / "topic_catalog.json")
-    if not isinstance(data, list):
-        raise StartLessonError("topic_catalog.json must contain a list.")
+    data = load_topic_catalog_dicts(prefer_supabase=True)
+    if not isinstance(data, list) or not data:
+        raise StartLessonError("No topic catalog found. Check Supabase mlos_topic_catalog or local topics/topic_catalog.json.")
     return [Topic(**item) for item in data]
 
 
@@ -493,69 +499,94 @@ def main() -> None:
     write_log(run_id, f"Lesson started for {topic.topic_id}")
     write_log(run_id, f"Selection reason: {selected.reason}")
 
-    teacher_llm_callable = build_llm_callable("teacher")
-    architect_llm_callable = build_llm_callable("architect_lens")
-    assessor_llm_callable = build_llm_callable("assessor")
-
-    teacher_payload = build_teacher_payload(
-        selected_topic=topic,
-        learner_profile=learner_profile,
-        weak_spots=[],
-    )
-    try:
-        concept_note, teacher_diagnostics = generate_teacher_note_with_quality_loop(
-            teacher_payload,
-            teacher_llm_callable,
-        )
-    except Exception as exc:
-        concept_note = build_fallback_concept_note(topic)
+    if is_checkpoint_topic(topic.topic_id):
+        concept_note = build_checkpoint_concept_note(topic)
         teacher_diagnostics = {
-            "status": "fallback_used",
-            "error": str(exc),
-            "message": "Teacher generation failed. Deterministic fallback note was used so the lesson could continue.",
+            "status": "checkpoint_static_content",
+            "message": "Module checkpoint uses deterministic cross-topic assessment content.",
         }
-        write_log(run_id, f"Teacher generation failed. Fallback concept note used: {exc}")
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_log(run_id, "Checkpoint concept note generated from deterministic checkpoint bank")
 
-    write_json(f"runs/{run_id}/concept_note.json", concept_note)
-    write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
-    write_markdown(
-        f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
-        concept_note_to_markdown(concept_note),
-    )
-    write_log(
-        run_id,
-        f"Concept note generated with teacher quality status: {teacher_diagnostics['status']}",
-    )
+        architect_note = build_checkpoint_architect_note(topic)
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Checkpoint architect note generated from deterministic checkpoint bank")
 
-    architect_payload = build_architect_lens_payload(
-        selected_topic=topic,
-        concept_note=concept_note,
-        learner_profile=learner_profile,
-    )
-    try:
-        architect_note = generate_architect_note(architect_payload, architect_llm_callable)
-    except Exception as exc:
-        architect_note = build_fallback_architect_note(topic, concept_note, learner_profile)
-        write_log(run_id, f"Architect lens generation failed. Fallback architect note used: {exc}")
+        assessment = build_checkpoint_assessment(topic)
+        write_log(run_id, "Checkpoint assessment generated from deterministic checkpoint bank")
+    else:
+        teacher_llm_callable = build_llm_callable("teacher")
+        architect_llm_callable = build_llm_callable("architect_lens")
+        assessor_llm_callable = build_llm_callable("assessor")
 
-    write_json(f"runs/{run_id}/architect_note.json", architect_note)
-    write_markdown(
-        f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
-        architect_note_to_markdown(architect_note),
-    )
-    write_log(run_id, "Architect note generated")
+        teacher_payload = build_teacher_payload(
+            selected_topic=topic,
+            learner_profile=learner_profile,
+            weak_spots=[],
+        )
+        try:
+            concept_note, teacher_diagnostics = generate_teacher_note_with_quality_loop(
+                teacher_payload,
+                teacher_llm_callable,
+            )
+        except Exception as exc:
+            concept_note = build_fallback_concept_note(topic)
+            teacher_diagnostics = {
+                "status": "fallback_used",
+                "error": str(exc),
+                "message": "Teacher generation failed. Deterministic fallback note was used so the lesson could continue.",
+            }
+            write_log(run_id, f"Teacher generation failed. Fallback concept note used: {exc}")
 
-    assessor_payload = build_assessor_payload(
-        concept_note=concept_note,
-        architect_note=architect_note,
-        learner_profile=learner_profile,
-        weak_spots=[],
-    )
-    try:
-        assessment = generate_assessment(assessor_payload, assessor_llm_callable)
-    except Exception as exc:
-        assessment = build_fallback_assessment(topic, concept_note, architect_note)
-        write_log(run_id, f"Assessment generation failed. Fallback mission set used: {exc}")
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_log(
+            run_id,
+            f"Concept note generated with teacher quality status: {teacher_diagnostics['status']}",
+        )
+
+        architect_payload = build_architect_lens_payload(
+            selected_topic=topic,
+            concept_note=concept_note,
+            learner_profile=learner_profile,
+        )
+        try:
+            architect_note = generate_architect_note(architect_payload, architect_llm_callable)
+        except Exception as exc:
+            architect_note = build_fallback_architect_note(topic, concept_note, learner_profile)
+            write_log(run_id, f"Architect lens generation failed. Fallback architect note used: {exc}")
+
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Architect note generated")
+
+        assessor_payload = build_assessor_payload(
+            concept_note=concept_note,
+            architect_note=architect_note,
+            learner_profile=learner_profile,
+            weak_spots=[],
+        )
+        try:
+            assessment = generate_assessment(assessor_payload, assessor_llm_callable)
+        except Exception as exc:
+            assessment = build_fallback_assessment(topic, concept_note, architect_note)
+            write_log(run_id, f"Assessment generation failed. Fallback mission set used: {exc}")
 
     write_json(f"runs/{run_id}/assessment.json", assessment)
 

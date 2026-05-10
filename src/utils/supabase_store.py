@@ -215,3 +215,33 @@ def fetch_run_artifacts(run_id: str) -> List[Dict[str, Any]]:
 
     result = client.table("mlos_artifacts").select("*").eq("run_id", run_id).execute()
     return getattr(result, "data", None) or []
+
+
+def fetch_topic_catalog_rows() -> List[Dict[str, Any]]:
+    client = get_supabase_client()
+    if client is None:
+        return []
+
+    result = (
+        client.table("mlos_topic_catalog")
+        .select("*")
+        .eq("is_active", True)
+        .order("sequence_no", desc=False)
+        .execute()
+    )
+    return getattr(result, "data", None) or []
+
+
+def upsert_learner_progress_rows(rows: List[Dict[str, Any]]) -> None:
+    client = get_supabase_client()
+    if client is None or not rows:
+        return
+    client.table("mlos_learner_progress").upsert(rows, on_conflict="topic_id").execute()
+
+
+def fetch_learner_progress_rows() -> List[Dict[str, Any]]:
+    client = get_supabase_client()
+    if client is None:
+        return []
+    result = client.table("mlos_learner_progress").select("*").execute()
+    return getattr(result, "data", None) or []

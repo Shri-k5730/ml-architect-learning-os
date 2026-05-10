@@ -196,5 +196,230 @@
       "false_positives",
       "false_negatives"
     ]
+  },
+  {
+    "topic_id": "checkpoint_ml_foundations_001",
+    "title": "Checkpoint 1: ML Foundations Review",
+    "domain": "module_checkpoint",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_010"
+    ],
+    "architect_relevance": [
+      "cross_topic_synthesis",
+      "metric_decision_quality",
+      "production_readiness_review"
+    ],
+    "tags": [
+      "checkpoint",
+      "ml_foundations",
+      "evaluation",
+      "practical_review",
+      "architecture_readiness"
+    ]
+  },
+  {
+    "topic_id": "mlf_011",
+    "title": "Model selection and validation strategy",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "checkpoint_ml_foundations_001"
+    ],
+    "architect_relevance": [
+      "model_selection",
+      "validation_design",
+      "offline_to_online_risk"
+    ],
+    "tags": [
+      "validation",
+      "cross_validation",
+      "holdout",
+      "model_selection"
+    ]
+  },
+  {
+    "topic_id": "mlf_012",
+    "title": "Feature engineering and feature contracts",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_011"
+    ],
+    "architect_relevance": [
+      "feature_design",
+      "data_contracts",
+      "pipeline_reliability"
+    ],
+    "tags": [
+      "feature_engineering",
+      "feature_store",
+      "data_contracts",
+      "schema"
+    ]
+  },
+  {
+    "topic_id": "mlf_013",
+    "title": "Encoding categorical variables safely",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_012"
+    ],
+    "architect_relevance": [
+      "categorical_encoding",
+      "production_schema_drift",
+      "unseen_categories"
+    ],
+    "tags": [
+      "one_hot_encoding",
+      "target_encoding",
+      "categorical_features",
+      "unseen_categories"
+    ]
+  },
+  {
+    "topic_id": "mlf_014",
+    "title": "Scaling, normalization, and pipeline leakage",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_013"
+    ],
+    "architect_relevance": [
+      "preprocessing_pipeline",
+      "leakage_control",
+      "training_serving_consistency"
+    ],
+    "tags": [
+      "scaling",
+      "normalization",
+      "standardization",
+      "pipeline_leakage"
+    ]
+  },
+  {
+    "topic_id": "mlf_015",
+    "title": "Regularization: controlling model complexity",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_014"
+    ],
+    "architect_relevance": [
+      "capacity_control",
+      "overfitting_control",
+      "model_robustness"
+    ],
+    "tags": [
+      "regularization",
+      "l1",
+      "l2",
+      "complexity",
+      "generalization"
+    ]
+  },
+  {
+    "topic_id": "mlf_016",
+    "title": "Threshold tuning and cost-sensitive decisions",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_015"
+    ],
+    "architect_relevance": [
+      "threshold_design",
+      "cost_of_errors",
+      "business_decision_alignment"
+    ],
+    "tags": [
+      "threshold",
+      "precision_recall_tradeoff",
+      "cost_sensitive",
+      "classification"
+    ]
+  },
+  {
+    "topic_id": "mlf_017",
+    "title": "Class imbalance handling strategies",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_016"
+    ],
+    "architect_relevance": [
+      "imbalanced_learning",
+      "sampling_strategy",
+      "minority_class_reliability"
+    ],
+    "tags": [
+      "class_imbalance",
+      "resampling",
+      "class_weights",
+      "rare_events"
+    ]
+  },
+  {
+    "topic_id": "mlf_018",
+    "title": "Error analysis and model debugging",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_017"
+    ],
+    "architect_relevance": [
+      "error_slicing",
+      "debugging_workflow",
+      "failure_taxonomy"
+    ],
+    "tags": [
+      "error_analysis",
+      "model_debugging",
+      "slices",
+      "failure_modes"
+    ]
+  },
+  {
+    "topic_id": "mlf_019",
+    "title": "Model interpretability and explainability limits",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_018"
+    ],
+    "architect_relevance": [
+      "explainability",
+      "governance",
+      "stakeholder_trust",
+      "model_risk"
+    ],
+    "tags": [
+      "interpretability",
+      "explainability",
+      "shap",
+      "feature_importance"
+    ]
+  },
+  {
+    "topic_id": "mlf_020",
+    "title": "ML monitoring: drift, performance, and retraining triggers",
+    "domain": "advanced_machine_learning",
+    "difficulty": 3,
+    "prerequisites": [
+      "mlf_019"
+    ],
+    "architect_relevance": [
+      "monitoring_architecture",
+      "drift_detection",
+      "retraining_policy",
+      "production_governance"
+    ],
+    "tags": [
+      "monitoring",
+      "data_drift",
+      "concept_drift",
+      "retraining",
+      "model_ops"
+    ]
   }
 ]
