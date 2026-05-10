@@ -32,6 +32,7 @@ from src.schemas import (
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
+from src.utils.curriculum_catalog import load_topic_catalog_dicts
 from src.practice.exercise_bank import build_practice_submission_template, get_exercise_for_topic
 from src.checkpoints.checkpoint_bank import (
     build_checkpoint_architect_note,
