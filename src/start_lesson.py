@@ -33,6 +33,7 @@ from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
 from src.utils.curriculum_catalog import load_topic_catalog_dicts
+from src.utils.tracker import read_progress_rows
 from src.practice.exercise_bank import build_practice_submission_template, get_exercise_for_topic
 from src.checkpoints.checkpoint_bank import (
     build_checkpoint_architect_note,
@@ -287,6 +288,86 @@ def find_active_awaiting_run() -> Optional[Path]:
 
 
 
+def _completed_topics_from_progress() -> set[str]:
+    """Return topics that durable progress says are already completed."""
+    try:
+        rows = read_progress_rows()
+    except Exception:
+        return set()
+    completed: set[str] = set()
+    for row in rows:
+        topic_id = str(row.get("topic_id") or "").strip()
+        status = str(row.get("status") or "").strip().lower()
+        if topic_id and status == "completed":
+            completed.add(topic_id)
+    return completed
+
+
+def _is_stale_active_run(active_state: Dict[str, Any], completed_topics: set[str]) -> bool:
+    """A local awaiting run is stale if its topic is already completed durably.
+
+    Streamlit can keep local run folders across redeploy/runtime sessions. Patch
+    007 accidentally created a new awaiting run for mlf_001 after mlf_001 was
+    already completed. The UI learned to ignore that run, but src.start_lesson
+    still blocked because it checks local run_state.json first. This function
+    gives the CLI/subprocess the same protection as the UI.
+    """
+    topic_id = str(active_state.get("topic_id") or "").strip()
+    phase = str(active_state.get("phase") or "").strip()
+    next_action = str(active_state.get("next_action") or "").strip()
+    if not topic_id:
+        return False
+    return (
+        topic_id in completed_topics
+        and phase == "awaiting_user_answers"
+        and next_action == "await_user_answers"
+    )
+
+
+def _abandon_stale_active_run(active_run: Path, active_state: Dict[str, Any]) -> None:
+    """Mark a stale local active run as abandoned so it stops blocking startup."""
+    topic_id = str(active_state.get("topic_id") or "")
+    run_id = str(active_state.get("run_id") or active_run.name)
+    active_state["phase"] = "abandoned_stale_run"
+    active_state["status"] = "abandoned"
+    active_state["next_action"] = "ignored_stale_completed_topic_run"
+    active_state["abandoned_reason"] = (
+        "Local awaiting run was for a topic already completed in durable progress. "
+        "It was abandoned automatically so the next unlocked curriculum item can start."
+    )
+    try:
+        (active_run / "run_state.json").write_text(
+            json.dumps(active_state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    try:
+        write_log(run_id, f"Stale active run abandoned automatically for completed topic {topic_id}.")
+    except Exception:
+        pass
+    try:
+        upsert_run(
+            run_id=run_id,
+            topic_id=topic_id,
+            topic_title=str(active_state.get("topic_name") or topic_id),
+            phase="abandoned_stale_run",
+            status="abandoned",
+            run_state=active_state,
+        )
+        append_event(
+            event_type="stale_active_run_auto_abandoned",
+            run_id=run_id,
+            topic_id=topic_id,
+            payload={
+                "reason": "Active local run topic is already completed in durable progress.",
+                "source": "src.start_lesson",
+            },
+        )
+    except Exception:
+        pass
+
+
 # -----------------------------
 # Deterministic fallbacks
 # -----------------------------
@@ -470,10 +551,14 @@ def main() -> None:
     active_run = find_active_awaiting_run()
     if active_run is not None:
         active_state = load_json(active_run / "run_state.json")
-        raise StartLessonError(
-            f"Active lesson already exists: {active_state['run_id']} ({active_state['topic_id']}). "
-            f"Finish active lesson first."
-        )
+        completed_topics = _completed_topics_from_progress()
+        if _is_stale_active_run(active_state, completed_topics):
+            _abandon_stale_active_run(active_run, active_state)
+        else:
+            raise StartLessonError(
+                f"Active lesson already exists: {active_state['run_id']} ({active_state['topic_id']}). "
+                f"Finish active lesson first."
+            )
 
     learner_profile = load_yaml(CONFIG_DIR / "learner_profile.yaml")
     topic_catalog = load_topic_catalog()
