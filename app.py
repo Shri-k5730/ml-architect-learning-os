@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from html import escape
 
 import streamlit as st
 
@@ -297,6 +298,173 @@ def inject_theme() -> None:
             color: #cbd5e1;
             font-size: 0.92rem;
             font-weight: 650;
+        }
+
+
+
+        .app-header-row {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .status-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.55rem;
+            margin: 0.75rem 0 1.2rem 0;
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            border-radius: 999px;
+            padding: 0.42rem 0.72rem;
+            background: rgba(15, 23, 42, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            color: #cbd5e1;
+            font-size: 0.84rem;
+            font-weight: 700;
+        }
+
+        .current-topic-hero {
+            border-radius: 24px;
+            padding: 1.2rem 1.25rem;
+            margin-bottom: 1rem;
+            background:
+                linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.80)),
+                radial-gradient(circle at top right, rgba(14, 165, 233, 0.16), transparent 36%);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.26);
+        }
+
+        .topic-kicker {
+            color: #7dd3fc;
+            font-size: 0.78rem;
+            font-weight: 850;
+            text-transform: uppercase;
+            letter-spacing: 0.11em;
+            margin-bottom: 0.38rem;
+        }
+
+        .topic-heading {
+            color: #f8fafc;
+            font-size: 1.75rem;
+            line-height: 1.15;
+            font-weight: 900;
+            letter-spacing: -0.03em;
+            margin-bottom: 0.5rem;
+        }
+
+        .topic-subline {
+            color: #94a3b8;
+            font-size: 0.95rem;
+            line-height: 1.45;
+        }
+
+        .workflow-strip {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin: 0.75rem 0 0 0;
+        }
+
+        .workflow-step {
+            border-radius: 999px;
+            padding: 0.42rem 0.72rem;
+            background: rgba(124, 58, 237, 0.13);
+            border: 1px solid rgba(167, 139, 250, 0.22);
+            color: #ddd6fe;
+            font-size: 0.82rem;
+            font-weight: 760;
+        }
+
+        .section-card {
+            border-radius: 22px;
+            padding: 1rem 1.05rem;
+            margin-bottom: 0.85rem;
+            background: rgba(15, 23, 42, 0.70);
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18);
+        }
+
+        .section-card h4 {
+            margin: 0 0 0.45rem 0;
+            color: #f8fafc;
+            font-size: 1rem;
+            font-weight: 860;
+        }
+
+        .section-card p, .section-card li {
+            color: #cbd5e1;
+            line-height: 1.55;
+            font-size: 0.95rem;
+        }
+
+        .section-card ul {
+            margin: 0.45rem 0 0 1.1rem;
+            padding: 0;
+        }
+
+        .two-card-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.85rem;
+            margin-bottom: 0.2rem;
+        }
+
+        .callout-good {
+            border-color: rgba(34, 197, 94, 0.26);
+            background: linear-gradient(135deg, rgba(20, 83, 45, 0.32), rgba(15, 23, 42, 0.72));
+        }
+
+        .callout-risk {
+            border-color: rgba(251, 191, 36, 0.26);
+            background: linear-gradient(135deg, rgba(113, 63, 18, 0.30), rgba(15, 23, 42, 0.72));
+        }
+
+        .mission-card {
+            border-radius: 20px;
+            padding: 0.95rem 1rem;
+            margin-bottom: 0.95rem;
+            background: rgba(2, 6, 23, 0.42);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+        }
+
+        .mission-card-title {
+            color: #f8fafc;
+            font-size: 0.98rem;
+            font-weight: 850;
+            margin-bottom: 0.35rem;
+        }
+
+        .mission-question {
+            color: #cbd5e1;
+            line-height: 1.48;
+            margin-bottom: 0.7rem;
+        }
+
+        .save-panel {
+            border-radius: 22px;
+            padding: 1rem;
+            background: rgba(15, 23, 42, 0.76);
+            border: 1px solid rgba(125, 211, 252, 0.18);
+            box-shadow: 0 18px 48px rgba(14, 165, 233, 0.10);
+            margin-bottom: 1rem;
+        }
+
+        .small-muted {
+            color: #94a3b8;
+            font-size: 0.86rem;
+            line-height: 1.45;
+        }
+
+        @media (max-width: 900px) {
+            .two-card-grid { grid-template-columns: 1fr; }
+            .topic-heading { font-size: 1.35rem; }
         }
 
         .stAlert { border-radius: 18px; }
@@ -898,6 +1066,152 @@ def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
 
 
 
+
+
+def html_text(value: Any) -> str:
+    return escape(str(value or ""))
+
+
+def html_list(items: Any) -> str:
+    if not items:
+        return ""
+    if not isinstance(items, list):
+        items = [items]
+    lis = "".join(f"<li>{html_text(item)}</li>" for item in items if str(item or "").strip())
+    return f"<ul>{lis}</ul>" if lis else ""
+
+
+def render_static_card(title: str, body: Any, css_class: str = "") -> None:
+    content = ""
+    if isinstance(body, list):
+        content = html_list(body)
+    else:
+        content = f"<p>{html_text(body)}</p>" if str(body or "").strip() else "<p class='small-muted'>Not available.</p>"
+    st.markdown(
+        f"""
+        <div class="section-card {css_class}">
+            <h4>{html_text(title)}</h4>
+            {content}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_topic_hero(run_state: Dict[str, Any], concept_note: Dict[str, Any], mission_types: List[str]) -> None:
+    mission_chips = "".join(
+        f"<span class='status-pill'>{html_text(item.replace('_', ' ').title())}</span>"
+        for item in mission_types
+    )
+    st.markdown(
+        f"""
+        <div class="current-topic-hero">
+            <div class="topic-kicker">{html_text(run_state.get('topic_id'))} . Current Level</div>
+            <div class="topic-heading">{html_text(concept_note.get('title'))}</div>
+            <div class="topic-subline">Complete the flow left to right: learn the concept, check understanding, write missions, run practical work, then verify and submit.</div>
+            <div class="workflow-strip">
+                <span class="workflow-step">1 Learn</span>
+                <span class="workflow-step">2 MCQs</span>
+                <span class="workflow-step">3 Missions</span>
+                <span class="workflow-step">4 Code Lab</span>
+                <span class="workflow-step">5 Verify + Submit</span>
+            </div>
+            <div class="status-strip">{mission_chips}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_learning_brief(concept_note: Dict[str, Any], architect_note: Dict[str, Any]) -> None:
+    st.markdown("### Learning Brief")
+    st.caption("Read this first. The mission answers should reuse the logic, not copy the wording.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("Concept", concept_note.get("simple_explanation", ""))
+    with c2:
+        render_static_card("Tiny Example", concept_note.get("tiny_example", ""))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("Wrong Mental Model", concept_note.get("wrong_mental_model", ""), "callout-risk")
+    with c2:
+        render_static_card("Correct Mental Model", concept_note.get("correct_mental_model", ""), "callout-good")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("Why It Matters", concept_note.get("why_it_matters", ""))
+    with c2:
+        render_static_card("Edge Case", concept_note.get("edge_case", ""))
+
+    render_static_card("Three Takeaways", concept_note.get("three_takeaways", []))
+
+    st.markdown("### Architect Lens")
+    render_static_card("Architect Summary", architect_note.get("architect_summary", ""))
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("Design Implications", architect_note.get("design_implications", []))
+    with c2:
+        render_static_card("Production Risks", architect_note.get("production_risks", []), "callout-risk")
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("Common Mistakes", architect_note.get("common_mistakes", []))
+    with c2:
+        render_static_card("Interview Framing", architect_note.get("interview_framing", ""))
+
+
+def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
+    st.markdown("### Study Booster")
+    st.caption("Use this to bridge the gap between concept notes and mission-quality answers.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("In One Line", booster.get("plain_language", ""), "callout-good")
+    with c2:
+        render_static_card("Worked Example", booster.get("worked_example", ""))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("Common Production Trap", booster.get("production_trap", ""), "callout-risk")
+    with c2:
+        render_static_card("How To Approach Missions", booster.get("mission_hint", ""))
+
+    focus = booster.get("mission_focus", []) or []
+    if focus:
+        render_static_card("Evaluator Will Look For", focus)
+
+
+def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
+    mcqs = booster.get("mcqs", []) or []
+    st.markdown("### Pre-mission MCQs")
+    st.caption("Learning checks only. They do not affect score, XP, or unlocks.")
+    if not mcqs:
+        st.info("No MCQs configured for this lesson yet.")
+        return
+
+    for idx, item in enumerate(mcqs, start=1):
+        qkey = f"{topic_id}_mcq_{idx}"
+        with st.expander(f"Check {idx}. {item.get('question', '')}", expanded=(idx == 1)):
+            options = item.get("options", []) or []
+            if not options:
+                st.info("No options configured.")
+                continue
+            selected = st.radio(
+                label=f"Select answer for check {idx}",
+                options=list(range(len(options))),
+                format_func=lambda i, opts=options: opts[i],
+                key=qkey,
+                label_visibility="collapsed",
+            )
+            correct_index = int(item.get("answer_index", -1))
+            if st.button(f"Check answer {idx}", key=f"{qkey}_btn", use_container_width=True):
+                if selected == correct_index:
+                    st.success("Correct. " + str(item.get("explanation", "")))
+                else:
+                    st.error("Not quite. " + str(item.get("explanation", "")))
+                    st.caption("Hint: revise the Study Booster, then try again. The correct option is intentionally not shown here.")
+
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
 
@@ -1224,7 +1538,7 @@ with tabs[0]:
 # -----------------------------
 with tabs[1]:
     if awaiting_run is None:
-        st.info("No active lesson. Start or replay a level from Home.")
+        st.info("No active lesson. Start the next available level from Home.")
     else:
         run_state = load_json(awaiting_run / "run_state.json")
         topic_id = run_state["topic_id"]
@@ -1236,74 +1550,60 @@ with tabs[1]:
         answer_path = PROJECT_ROOT / run_state["artifacts"]["answers"]
         answers_doc = load_json(answer_path)
 
-        st.subheader(f"Current Level . {concept_note['title']}")
         mission_types = sorted({item["type"] for item in answers_doc["answers"]})
-        st.caption(f"Mission types: {', '.join(mission_types)}")
+        render_topic_hero(run_state, concept_note, mission_types)
 
-        left, right = st.columns([1.05, 0.95])
+        booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
 
-        with left:
-            st.markdown("### Concept")
-            st.write(concept_note["simple_explanation"])
+        artifacts = run_state.get("artifacts", {}) or {}
+        practice_exercise = load_relative_json_or_none(artifacts.get("practice_exercise"))
+        practice_submission_path = None
+        practice_submission = None
+        updated_practice_submission = None
 
-            st.markdown("### Wrong Mental Model")
-            st.write(concept_note["wrong_mental_model"])
+        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions"]
+        if practice_exercise is not None:
+            current_tabs.append("⑤ Code Lab")
+            submit_tab_label = "⑥ Verify + Submit"
+        else:
+            submit_tab_label = "⑤ Verify + Submit"
+        current_tabs.append(submit_tab_label)
+        lesson_tabs = st.tabs(current_tabs)
 
-            st.markdown("### Correct Mental Model")
-            st.write(concept_note["correct_mental_model"])
+        with lesson_tabs[0]:
+            render_learning_brief(concept_note, architect_note)
 
-            st.markdown("### Tiny Example")
-            st.write(concept_note["tiny_example"])
+        with lesson_tabs[1]:
+            render_booster_walkthrough(booster)
 
-            st.markdown("### Why It Matters")
-            st.write(concept_note["why_it_matters"])
+        with lesson_tabs[2]:
+            render_pre_mission_mcqs(topic_id, booster)
 
-            st.markdown("### Edge Case")
-            st.write(concept_note["edge_case"])
+        updated_answers = {
+            "topic_id": answers_doc["topic_id"],
+            "status": "pending_user_answers",
+            "answers": [],
+        }
 
-            st.markdown("### Three Takeaways")
-            for item in concept_note["three_takeaways"]:
-                st.markdown(f"- {item}")
-
-            st.divider()
-
-            st.markdown("### Architect Lens")
-            st.write(architect_note["architect_summary"])
-
-            st.markdown("**Design Implications**")
-            for item in architect_note["design_implications"]:
-                st.markdown(f"- {item}")
-
-            st.markdown("**Common Mistakes**")
-            for item in architect_note["common_mistakes"]:
-                st.markdown(f"- {item}")
-
-            st.markdown("**Production Risks**")
-            for item in architect_note["production_risks"]:
-                st.markdown(f"- {item}")
-
-            st.markdown("**Interview Framing**")
-            st.write(architect_note["interview_framing"])
-
-        with right:
-            render_lesson_booster_panel(topic_id, concept_note, architect_note, assessment_doc)
-            st.divider()
-            st.subheader("Mission Response")
-
-            updated_answers = {
-                "topic_id": answers_doc["topic_id"],
-                "status": "pending_user_answers",
-                "answers": [],
-            }
+        with lesson_tabs[3]:
+            st.markdown("### Mission Response")
+            st.caption("Answer in your own words. Good answers should connect concept, example, production impact, and architect control.")
 
             for i, item in enumerate(answers_doc["answers"], start=1):
                 mission_type = item.get("type", "mission").replace("_", " ").title()
-                st.markdown(f"**Mission {i} · {mission_type}**")
-                st.markdown(item["question"])
+                st.markdown(
+                    f"""
+                    <div class="mission-card">
+                        <div class="mission-card-title">Mission {i} . {html_text(mission_type)}</div>
+                        <div class="mission-question">{html_text(item['question'])}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
                 answer_text = st.text_area(
                     label=f"Answer for {item['question_id']}",
                     value=item.get("answer", ""),
-                    height=110,
+                    height=135,
                     key=f"{run_state['run_id']}_{item['question_id']}",
                     label_visibility="collapsed",
                 )
@@ -1316,13 +1616,10 @@ with tabs[1]:
                     }
                 )
 
-            artifacts = run_state.get("artifacts", {}) or {}
-            practice_exercise = load_relative_json_or_none(artifacts.get("practice_exercise"))
-            practice_submission_path = None
-            practice_submission = None
-            updated_practice_submission = None
-
-            if practice_exercise is not None:
+        if practice_exercise is not None:
+            practice_tab_index = 4
+            submit_tab_index = 5
+            with lesson_tabs[practice_tab_index]:
                 practice_submission_rel = artifacts.get("practice_submission")
                 practice_submission_path = PROJECT_ROOT / practice_submission_rel if practice_submission_rel else awaiting_run / "practice_submission.json"
                 practice_submission = load_relative_json_or_none(practice_submission_rel) or {
@@ -1333,22 +1630,20 @@ with tabs[1]:
                     "interpretation": "",
                 }
 
-                st.divider()
-                st.subheader("Code Lab")
-                st.caption("This is a practical V2 exercise. Written answers alone are no longer enough.")
-                st.markdown(f"**{practice_exercise.get('title', 'Practice Exercise')}**")
-                st.write(practice_exercise.get("prompt", ""))
+                st.markdown("### Code Lab")
+                st.caption("Practical V2 exercise. Written answers alone are no longer enough.")
+                render_static_card(practice_exercise.get("title", "Practice Exercise"), practice_exercise.get("prompt", ""), "callout-good")
 
                 code_text = st.text_area(
                     "Code submission",
                     value=practice_submission.get("code", practice_exercise.get("starter_code", "")),
-                    height=210,
+                    height=260,
                     key=f"{run_state['run_id']}_practice_code",
                 )
                 interpretation_text = st.text_area(
                     "Practical interpretation",
                     value=practice_submission.get("interpretation", ""),
-                    height=120,
+                    height=135,
                     key=f"{run_state['run_id']}_practice_interpretation",
                     help=practice_exercise.get("interpretation_prompt", "Explain what the result means."),
                 )
@@ -1365,6 +1660,20 @@ with tabs[1]:
                     save_answers(practice_submission_path, updated_practice_submission)
                     result = run_code_exercise(practice_exercise, updated_practice_submission)
                     render_practice_result_summary(result)
+        else:
+            submit_tab_index = 4
+
+        with lesson_tabs[submit_tab_index]:
+            st.markdown("### Verify + Submit")
+            st.markdown(
+                """
+                <div class="save-panel">
+                    <div class="mission-card-title">Submission controls</div>
+                    <div class="small-muted">Save keeps your work. Verify Draft gives copy-safe feedback. Save + Evaluate finalizes the attempt.</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
             save_c1, save_c2, save_c3 = st.columns([1, 1, 1])
 
@@ -1429,6 +1738,7 @@ with tabs[1]:
                 verification_to_show = load_json(awaiting_run / "draft_verification.json")
 
             if verification_to_show:
+                st.divider()
                 render_draft_verification_panel(verification_to_show)
 
 
