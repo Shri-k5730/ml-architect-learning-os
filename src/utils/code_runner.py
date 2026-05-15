@@ -93,8 +93,6 @@ def _run_with_timeout(func: Callable[[], Any], timeout_seconds: int) -> Any:
         future.cancel()
         raise TimeoutError("Code execution timed out.") from exc
     finally:
-        # wait=False prevents the Streamlit request from hanging on a timed-out
-        # user function. cancel_futures is available on supported Python versions.
         executor.shutdown(wait=False, cancel_futures=True)
 
 
@@ -168,6 +166,23 @@ def _is_expected(actual: Any, expected: Any) -> bool:
     return actual == expected
 
 
+def _safe_error_category(error: str) -> str:
+    lowered = (error or "").lower()
+    if "division by zero" in lowered or "zero" in lowered:
+        return "zero_denominator_or_empty_input"
+    if "name" in lowered and "not defined" in lowered:
+        return "undefined_name_or_typo"
+    if "timed out" in lowered:
+        return "timeout"
+    if "syntax" in lowered:
+        return "syntax"
+    if "expected" in lowered:
+        return "incorrect_output"
+    if error:
+        return "runtime_error"
+    return "incorrect_output"
+
+
 def _run_one_test(fn: Any, test: Dict[str, Any], timeout_seconds: int) -> Dict[str, Any]:
     args = test.get("args", [])
     kwargs = test.get("kwargs", {})
@@ -187,6 +202,8 @@ def _run_one_test(fn: Any, test: Dict[str, Any], timeout_seconds: int) -> Dict[s
         passed = False
         error = str(exc)
 
+    failure_category = test.get("concept_tag") or _safe_error_category(error)
+
     return {
         "name": test.get("name", "unnamed_test"),
         "passed": passed,
@@ -194,6 +211,52 @@ def _run_one_test(fn: Any, test: Dict[str, Any], timeout_seconds: int) -> Dict[s
         "actual": actual,
         "error": error,
         "reason": test.get("reason", ""),
+        "scenario": test.get("scenario") or test.get("reason", ""),
+        "concept_tag": test.get("concept_tag", failure_category),
+        "failure_category": failure_category,
+        "failure_hint": test.get("failure_hint", "Re-check the formula and edge cases for this scenario."),
+        "visibility": test.get("visibility", "visible"),
+        "show_inputs": bool(test.get("show_inputs", False)),
+        "show_expected": bool(test.get("show_expected", True)),
+        "show_actual": bool(test.get("show_actual", True)),
+        "args": args if test.get("show_inputs", False) else None,
+        "kwargs": kwargs if test.get("show_inputs", False) else None,
+    }
+
+
+def _sanitize_hidden_test_result(item: Dict[str, Any], ordinal: int) -> Dict[str, Any]:
+    """Keep hidden tests useful without leaking the test data or expected output."""
+    return {
+        "name": f"hidden_test_{ordinal}",
+        "passed": bool(item.get("passed")),
+        "failure_category": item.get("failure_category") or item.get("concept_tag") or "hidden_case",
+        "concept_tag": item.get("concept_tag") or item.get("failure_category") or "hidden_case",
+        "failure_hint": item.get("failure_hint") or "Review the edge case named by the failure category.",
+        "scenario": item.get("scenario", "Hidden diagnostic case"),
+        "visibility": "hidden",
+    }
+
+
+def _diagnostics_from_results(visible_results: List[Dict[str, Any]], hidden_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    failed_visible = [item for item in visible_results if not item.get("passed")]
+    failed_hidden = [item for item in hidden_results if not item.get("passed")]
+
+    failed_categories: List[str] = []
+    hints: List[str] = []
+
+    for item in failed_visible + failed_hidden:
+        category = str(item.get("failure_category") or item.get("concept_tag") or "unknown")
+        if category not in failed_categories:
+            failed_categories.append(category)
+        hint = str(item.get("failure_hint") or "")
+        if hint and hint not in hints:
+            hints.append(hint)
+
+    return {
+        "failed_visible_count": len(failed_visible),
+        "failed_hidden_count": len(failed_hidden),
+        "failed_categories": failed_categories,
+        "hints": hints,
     }
 
 
@@ -245,6 +308,12 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
         "function_name": function_name,
         "visible_tests": [],
         "hidden_tests": [],
+        "diagnostics": {
+            "failed_visible_count": 0,
+            "failed_hidden_count": 0,
+            "failed_categories": [],
+            "hints": [],
+        },
         "summary": {},
         "interpretation": {
             "text": interpretation,
@@ -259,12 +328,16 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
     try:
         fn = _load_function(code, function_name=function_name, timeout_seconds=timeout_seconds)
         visible_results = [
-            _run_one_test(fn, test, timeout_seconds)
+            _run_one_test(fn, test | {"visibility": "visible"}, timeout_seconds)
             for test in exercise.get("visible_tests", [])
         ]
-        hidden_results = [
-            _run_one_test(fn, test, timeout_seconds)
+        raw_hidden_results = [
+            _run_one_test(fn, test | {"visibility": "hidden", "show_expected": False, "show_actual": False, "show_inputs": False}, timeout_seconds)
             for test in exercise.get("hidden_tests", [])
+        ]
+        hidden_results = [
+            _sanitize_hidden_test_result(item, ordinal=index + 1)
+            for index, item in enumerate(raw_hidden_results)
         ]
     except Exception as exc:
         result["status"] = "error"
@@ -277,6 +350,12 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
             "hidden_total": len(exercise.get("hidden_tests", [])),
             "total_passed": 0,
             "total_tests": len(exercise.get("visible_tests", [])) + len(exercise.get("hidden_tests", [])),
+        }
+        result["diagnostics"] = {
+            "failed_visible_count": len(exercise.get("visible_tests", [])),
+            "failed_hidden_count": len(exercise.get("hidden_tests", [])),
+            "failed_categories": [_safe_error_category(str(exc))],
+            "hints": ["Fix the runtime error before debugging metric logic."],
         }
         result["interpretation"] = _interpretation_score(
             interpretation,
@@ -294,6 +373,7 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
 
     result["visible_tests"] = visible_results
     result["hidden_tests"] = hidden_results
+    result["diagnostics"] = _diagnostics_from_results(visible_results, hidden_results)
     result["summary"] = {
         "passed": passed,
         "visible_passed": visible_passed,
@@ -314,15 +394,18 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
 def build_practice_coaching(exercise: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     summary = result.get("summary", {})
     interpretation = result.get("interpretation", {})
+    diagnostics = result.get("diagnostics", {}) or {}
     passed = bool(summary.get("passed"))
     missing_focus = interpretation.get("missing_focus", []) or []
+    failed_categories = diagnostics.get("failed_categories", []) or []
+    diagnostic_hints = diagnostics.get("hints", []) or []
 
     if passed and not missing_focus:
         next_step = "Good. Now connect the metric result to the production decision and threshold policy."
     elif passed:
         next_step = "The code is correct. Strengthen the interpretation by naming business cost, error type, and the metric you would add."
     else:
-        next_step = "Fix the function first. Use the formula in the exercise prompt, then explain what the metric means for production."
+        next_step = "Fix the function first. Use the failed skill categories below before looking at any sample answer."
 
     default_better_code = """def calculate_accuracy(y_true, y_pred):\n    if not y_true:\n        return 0.0\n    correct = sum(1 for actual, predicted in zip(y_true, y_pred) if actual == predicted)\n    return correct / len(y_true)\n"""
     default_better_interpretation = (
@@ -338,6 +421,9 @@ def build_practice_coaching(exercise: Dict[str, Any], result: Dict[str, Any]) ->
         "title": exercise.get("title"),
         "passed": passed,
         "test_summary": summary,
+        "diagnostics": diagnostics,
+        "failed_categories": failed_categories,
+        "diagnostic_hints": diagnostic_hints,
         "interpretation_score": interpretation.get("score", 1),
         "missing_interpretation_focus": missing_focus,
         "better_code": exercise.get("better_code") or default_better_code,

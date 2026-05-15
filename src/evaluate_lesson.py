@@ -371,17 +371,44 @@ next_action: {evaluation.next_action}
 """
 
 
+def _is_checkpoint_topic(topic_id: str) -> bool:
+    return str(topic_id or "").startswith("checkpoint_")
+
+
+def _score_values(evaluation: EvaluationResult) -> List[int]:
+    return [
+        int(evaluation.scores.conceptual_clarity or 0),
+        int(evaluation.scores.practical_reasoning or 0),
+        int(evaluation.scores.architect_reasoning or 0),
+        int(evaluation.scores.communication or 0),
+    ]
+
+
 def apply_practice_gate_to_evaluation(
     evaluation: EvaluationResult,
     practice_result: Dict[str, Any] | None,
 ) -> EvaluationResult:
+    topic_id = str(getattr(evaluation, "topic_id", "") or "")
+    is_checkpoint = _is_checkpoint_topic(topic_id)
+
     if practice_result is None:
+        if is_checkpoint:
+            evaluation.decision = "revise"
+            evaluation.next_action = "retry_same_topic"
+            if "Checkpoint requires a practical Code Lab result before progression." not in evaluation.weak_spots:
+                evaluation.weak_spots.append("Checkpoint requires a practical Code Lab result before progression.")
+            evaluation.decision_reason = (
+                evaluation.decision_reason
+                + " Checkpoint gate applied: no Code Lab result was available."
+            )
         return evaluation
 
     summary = practice_result.get("summary", {}) or {}
     interpretation = practice_result.get("interpretation", {}) or {}
+    diagnostics = practice_result.get("diagnostics", {}) or {}
     tests_passed = bool(summary.get("passed"))
     interpretation_score = int(interpretation.get("score", 1) or 1)
+    failed_categories = diagnostics.get("failed_categories", []) or []
 
     if not tests_passed:
         evaluation.scores.practical_reasoning = min(evaluation.scores.practical_reasoning, 2)
@@ -389,6 +416,11 @@ def apply_practice_gate_to_evaluation(
             evaluation.weak_spots.append(
                 "Coding exercise tests failed, so the practical implementation is not yet reliable."
             )
+        if failed_categories:
+            category_text = ", ".join(str(item) for item in failed_categories)
+            detail = f"Code Lab failed skill area(s): {category_text}."
+            if detail not in evaluation.weak_spots:
+                evaluation.weak_spots.append(detail)
         evaluation.decision = "revise"
         evaluation.next_action = "retry_same_topic"
         evaluation.decision_reason = (
@@ -409,6 +441,22 @@ def apply_practice_gate_to_evaluation(
             evaluation.decision_reason = (
                 evaluation.decision_reason
                 + " Practical gate applied: implementation passed, but interpretation needs strengthening."
+            )
+
+    if is_checkpoint:
+        minimum_score = min(_score_values(evaluation))
+        if minimum_score < 3 or interpretation_score < 3 or evaluation.decision != "pass":
+            evaluation.decision = "revise"
+            evaluation.next_action = "retry_same_topic"
+            checkpoint_gap = (
+                "Checkpoint progression requires all core scores >= 3, Code Lab passed, "
+                "and production interpretation >= 3."
+            )
+            if checkpoint_gap not in evaluation.weak_spots:
+                evaluation.weak_spots.append(checkpoint_gap)
+            evaluation.decision_reason = (
+                evaluation.decision_reason
+                + " Checkpoint gate applied: Advanced ML remains locked until the foundation checkpoint is cleanly passed."
             )
 
     return evaluation

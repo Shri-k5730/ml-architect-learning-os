@@ -18,6 +18,7 @@ from src.utils.tracker import read_progress_rows
 from src.utils.cloud_state import repair_cloud_state_on_startup
 from src.utils.code_runner import run_code_exercise
 from src.agents.draft_verifier import verify_draft_answers
+from src.agents.lesson_booster import build_lesson_booster
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
 from src.utils.supabase_store import append_event, upsert_artifact
@@ -444,26 +445,56 @@ def render_practice_result_summary(result: Dict[str, Any]) -> None:
         if result.get("error"):
             st.code(result.get("error"))
 
+    diagnostics = result.get("diagnostics", {}) or {}
+    failed_categories = diagnostics.get("failed_categories", []) or []
+    diagnostic_hints = diagnostics.get("hints", []) or []
+    if failed_categories:
+        st.markdown("**Failed skill areas**")
+        for category in failed_categories:
+            st.warning(str(category))
+    if diagnostic_hints:
+        st.markdown("**Debug hints**")
+        for hint in diagnostic_hints:
+            st.info(str(hint))
+
     visible_rows = []
     for item in result.get("visible_tests", []) or []:
-        visible_rows.append(
-            {
-                "test": item.get("name"),
-                "passed": item.get("passed"),
-                "expected": item.get("expected"),
-                "actual": item.get("actual"),
-                "error": item.get("error"),
-            }
-        )
+        row = {
+            "test": item.get("name"),
+            "passed": item.get("passed"),
+            "scenario": item.get("scenario") or item.get("reason"),
+            "skill": item.get("concept_tag") or item.get("failure_category"),
+            "hint_if_failed": "" if item.get("passed") else item.get("failure_hint", ""),
+        }
+        if item.get("show_expected", True):
+            row["expected"] = item.get("expected")
+        if item.get("show_actual", True):
+            row["actual"] = item.get("actual")
+        if not item.get("passed") and item.get("error"):
+            row["error"] = item.get("error")
+        visible_rows.append(row)
+
     if visible_rows:
         st.markdown("**Visible test results**")
         st.dataframe(visible_rows, use_container_width=True)
 
     hidden_total = summary.get("hidden_total", 0)
     if hidden_total:
+        hidden_rows = []
+        for idx, item in enumerate(result.get("hidden_tests", []) or [], start=1):
+            hidden_rows.append(
+                {
+                    "hidden_test": idx,
+                    "passed": item.get("passed"),
+                    "failed_skill": "" if item.get("passed") else (item.get("failure_category") or item.get("concept_tag")),
+                    "diagnostic_hint": "" if item.get("passed") else item.get("failure_hint", ""),
+                }
+            )
+        st.markdown("**Hidden diagnostic results**")
         st.caption(
-            f"Hidden tests: {summary.get('hidden_passed', 0)}/{hidden_total} passed. Details are stored in run artifacts after evaluation."
+            "Hidden tests do not reveal inputs, expected outputs, or final answers. They show the failed skill area only."
         )
+        st.dataframe(hidden_rows, use_container_width=True)
 
     interpretation = result.get("interpretation", {}) or {}
     st.markdown("**Interpretation check**")
@@ -865,6 +896,60 @@ def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
             st.info(item.get("next_improvement", ""))
 
 
+
+
+def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
+    booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
+
+    st.markdown("### Study Booster")
+    st.caption("Use this before mission responses. It is a warm-up, not a final answer bank.")
+
+    with st.expander("Tutor walkthrough", expanded=True):
+        st.markdown("**In one line**")
+        st.info(booster.get("plain_language", ""))
+
+        st.markdown("**Worked example**")
+        st.write(booster.get("worked_example", ""))
+
+        st.markdown("**Common production trap**")
+        st.warning(booster.get("production_trap", ""))
+
+        st.markdown("**How to approach the missions**")
+        st.success(booster.get("mission_hint", ""))
+
+        focus = booster.get("mission_focus", []) or []
+        if focus:
+            st.markdown("**What the evaluator will look for**")
+            for item in focus:
+                st.markdown(f"- {item}")
+
+    mcqs = booster.get("mcqs", []) or []
+    if mcqs:
+        with st.expander("Pre-mission multiple choice checks", expanded=True):
+            st.caption("These checks are for learning only. They do not affect score or unlocks.")
+            for idx, item in enumerate(mcqs, start=1):
+                qkey = f"{topic_id}_mcq_{idx}"
+                st.markdown(f"**Check {idx}. {item.get('question', '')}**")
+                options = item.get("options", []) or []
+                if not options:
+                    continue
+                selected = st.radio(
+                    label=f"Select answer for check {idx}",
+                    options=list(range(len(options))),
+                    format_func=lambda i, opts=options: opts[i],
+                    key=qkey,
+                    label_visibility="collapsed",
+                )
+                correct_index = int(item.get("answer_index", -1))
+                if st.button(f"Check answer {idx}", key=f"{qkey}_btn"):
+                    if selected == correct_index:
+                        st.success("Correct. " + str(item.get("explanation", "")))
+                    else:
+                        st.error("Not quite. " + str(item.get("explanation", "")))
+                        if 0 <= correct_index < len(options):
+                            st.caption("Correct option: " + options[correct_index])
+                st.divider()
+
 def render_practice_coaching_panel(run_dir: Path) -> None:
     result_path = run_dir / "practice_result.json"
     coaching_path = run_dir / "practice_coaching.json"
@@ -883,6 +968,18 @@ def render_practice_coaching_panel(run_dir: Path) -> None:
         with st.expander("Practical coaching", expanded=False):
             st.markdown("**What to fix next**")
             st.write(coaching.get("next_step", ""))
+
+            failed_categories = coaching.get("failed_categories", []) or []
+            if failed_categories:
+                st.markdown("**Failed code skill areas**")
+                for item in failed_categories:
+                    st.markdown(f"- {item}")
+
+            diagnostic_hints = coaching.get("diagnostic_hints", []) or []
+            if diagnostic_hints:
+                st.markdown("**Debug hints without hidden answers**")
+                for item in diagnostic_hints:
+                    st.info(str(item))
 
             missing = coaching.get("missing_interpretation_focus", []) or []
             if missing:
@@ -1189,6 +1286,8 @@ with tabs[1]:
             st.write(architect_note["interview_framing"])
 
         with right:
+            render_lesson_booster_panel(topic_id, concept_note, architect_note, assessment_doc)
+            st.divider()
             st.subheader("Mission Response")
 
             updated_answers = {
