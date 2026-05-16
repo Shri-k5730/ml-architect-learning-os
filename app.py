@@ -22,7 +22,7 @@ from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact
+from src.utils.supabase_store import append_event, upsert_artifact, fetch_run_artifacts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -585,6 +585,69 @@ def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def has_non_empty_mission_answers(data: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(data, dict):
+        return False
+    for item in data.get("answers", []) or []:
+        if str(item.get("answer", "")).strip():
+            return True
+    return False
+
+
+def fetch_artifact_payload(run_id: str, artifact_type: str) -> Optional[Dict[str, Any]]:
+    try:
+        for row in fetch_run_artifacts(run_id):
+            if row.get("artifact_type") == artifact_type and isinstance(row.get("payload"), dict):
+                return row.get("payload")
+    except Exception:
+        return None
+    return None
+
+
+def load_mission_answers(answer_path: Path, run_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Load mission answers, preferring durable Supabase draft when local runtime is stale/empty."""
+    local_doc = load_json(answer_path)
+    run_id = str(run_state.get("run_id", ""))
+    durable_doc = fetch_artifact_payload(run_id, "answers")
+
+    if has_non_empty_mission_answers(durable_doc) and not has_non_empty_mission_answers(local_doc):
+        save_answers(answer_path, durable_doc)
+        return durable_doc
+
+    return local_doc
+
+
+def save_mission_answers_durable(
+    *,
+    answer_path: Path,
+    data: Dict[str, Any],
+    run_state: Dict[str, Any],
+    topic_id: str,
+    event_type: str = "mission_answers_saved",
+) -> None:
+    """Save mission answers locally and durably to Supabase so Streamlit sleep does not wipe work."""
+    save_answers(answer_path, data)
+    try:
+        upsert_artifact(
+            run_id=run_state["run_id"],
+            artifact_type="answers",
+            topic_id=topic_id,
+            payload=data,
+        )
+        append_event(
+            event_type=event_type,
+            run_id=run_state["run_id"],
+            topic_id=topic_id,
+            payload={
+                "answered_count": sum(1 for item in data.get("answers", []) if str(item.get("answer", "")).strip()),
+                "total_count": len(data.get("answers", []) or []),
+            },
+        )
+    except Exception:
+        # Local save should still succeed when Supabase is unavailable.
+        pass
 
 
 def load_relative_json_or_none(relative_path: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -1235,7 +1298,13 @@ def run_draft_verification_action(
     answer_path: Path,
     updated_answers: Dict[str, Any],
 ) -> None:
-    save_answers(answer_path, updated_answers)
+    save_mission_answers_durable(
+        answer_path=answer_path,
+        data=updated_answers,
+        run_state=run_state,
+        topic_id=topic_id,
+        event_type="mission_answers_saved_before_verify",
+    )
     verification = verify_draft_answers(
         concept_note=build_dataclass(concept_note, ConceptNote),
         architect_note=build_dataclass(architect_note, ArchitectNote),
@@ -1635,7 +1704,7 @@ with tabs[1]:
         assessment_doc = load_json(awaiting_run / "assessment.json")
 
         answer_path = PROJECT_ROOT / run_state["artifacts"]["answers"]
-        answers_doc = load_json(answer_path)
+        answers_doc = load_mission_answers(answer_path, run_state)
 
         mission_types = sorted({item["type"] for item in answers_doc["answers"]})
         render_topic_hero(run_state, concept_note, mission_types)
@@ -1648,7 +1717,7 @@ with tabs[1]:
         practice_submission = None
         updated_practice_submission = None
 
-        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions + Verify"]
+        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions"]
         if practice_exercise is not None:
             current_tabs.append("⑤ Code Lab")
             submit_tab_label = "⑥ Submit"
@@ -1705,13 +1774,18 @@ with tabs[1]:
                     }
                 )
 
-            st.markdown("### Save + Verify Draft")
-            st.caption("Save and Verify live here because they are part of writing missions. Final submission is separate.")
+            st.markdown("### Save Progress + Verify Draft")
+            st.caption("Use Save Draft while writing so Streamlit sleep/restart does not wipe your mission answers. Verify Draft gives copy-safe feedback before final submission.")
             action_c1, action_c2 = st.columns([1, 1])
             with action_c1:
-                if st.button("Save Answers", use_container_width=True):
-                    save_answers(answer_path, updated_answers)
-                    st.success("Mission answers saved.")
+                if st.button("Save Draft", use_container_width=True, key=f"{run_state['run_id']}_save_draft_missions"):
+                    save_mission_answers_durable(
+                        answer_path=answer_path,
+                        data=updated_answers,
+                        run_state=run_state,
+                        topic_id=topic_id,
+                    )
+                    st.success("Mission draft saved locally and to Supabase.")
             with action_c2:
                 if st.button("Verify Draft", use_container_width=True):
                     try:
@@ -1787,7 +1861,7 @@ with tabs[1]:
                 """
                 <div class="save-panel">
                     <div class="mission-card-title">Final submission</div>
-                    <div class="small-muted">Save and Verify Draft are in the Missions tab. Use this only when you are ready to lock the attempt for evaluation.</div>
+                    <div class="small-muted">Only final evaluation lives here. Save Draft and Verify Draft are inside the Missions tab so you can protect progress while writing.</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1797,7 +1871,13 @@ with tabs[1]:
                 st.info("Code Lab, if present, is included in final evaluation. Run it before submitting.")
 
             if st.button("Save + Evaluate", use_container_width=True):
-                save_answers(answer_path, updated_answers)
+                save_mission_answers_durable(
+                    answer_path=answer_path,
+                    data=updated_answers,
+                    run_state=run_state,
+                    topic_id=topic_id,
+                    event_type="mission_answers_saved_before_final_evaluation",
+                )
                 if updated_practice_submission is not None and practice_submission_path is not None:
                     save_answers(practice_submission_path, updated_practice_submission)
                 with st.spinner("Saving answers, running practical checks, and evaluating mission responses. This finalizes this attempt..."):
@@ -1807,12 +1887,6 @@ with tabs[1]:
                     st.session_state.pop("draft_verification", None)
                     st.session_state.pop("draft_verification_run_id", None)
                     st.rerun()
-
-            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"])
-            if verification_to_show:
-                st.divider()
-                st.caption("Latest draft verification from Missions tab")
-                render_draft_verification_panel(verification_to_show)
 
 
 
