@@ -1108,13 +1108,14 @@ def render_topic_hero(run_state: Dict[str, Any], concept_note: Dict[str, Any], m
         <div class="current-topic-hero">
             <div class="topic-kicker">{html_text(run_state.get('topic_id'))} . Current Level</div>
             <div class="topic-heading">{html_text(concept_note.get('title'))}</div>
-            <div class="topic-subline">Complete the flow left to right: learn the concept, check understanding, write missions, run practical work, then verify and submit.</div>
+            <div class="topic-subline">Complete the flow left to right: learn, bridge the concept to missions, check understanding, write and verify drafts, run practical work, then submit.</div>
             <div class="workflow-strip">
                 <span class="workflow-step">1 Learn</span>
-                <span class="workflow-step">2 MCQs</span>
-                <span class="workflow-step">3 Missions</span>
-                <span class="workflow-step">4 Code Lab</span>
-                <span class="workflow-step">5 Verify + Submit</span>
+                <span class="workflow-step">2 Booster</span>
+                <span class="workflow-step">3 MCQs</span>
+                <span class="workflow-step">4 Missions + Verify</span>
+                <span class="workflow-step">5 Code Lab</span>
+                <span class="workflow-step">6 Submit</span>
             </div>
             <div class="status-strip">{mission_chips}</div>
         </div>
@@ -1163,7 +1164,7 @@ def render_learning_brief(concept_note: Dict[str, Any], architect_note: Dict[str
 
 def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
     st.markdown("### Study Booster")
-    st.caption("Use this to bridge the gap between concept notes and mission-quality answers.")
+    st.caption("This bridges the gap between the concept note and mission-quality answers. It is not an answer bank.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1177,9 +1178,96 @@ def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
     with c2:
         render_static_card("How To Approach Missions", booster.get("mission_hint", ""))
 
+    key_distinctions = booster.get("key_distinctions", []) or []
+    if key_distinctions:
+        render_static_card("Key Distinctions You Must Know", key_distinctions, "callout-good")
+
+    answer_frame = booster.get("answer_frame", []) or []
+    if answer_frame:
+        render_static_card("Mission Answer Frame", answer_frame)
+
     focus = booster.get("mission_focus", []) or []
     if focus:
         render_static_card("Evaluator Will Look For", focus)
+
+
+def render_mission_bridge(booster: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
+    bridge_items = booster.get("mission_bridge", []) or []
+    questions = assessment_doc.get("questions", []) or []
+    if not bridge_items and not questions:
+        return
+
+    st.markdown("### Mission Readiness Map")
+    st.caption("This is the contract between what was taught and what each mission expects. Use it to plan, not to copy.")
+
+    bridge_by_type = {
+        str(item.get("mission_type", "")): item
+        for item in bridge_items
+        if isinstance(item, dict)
+    }
+
+    for idx, question in enumerate(questions, start=1):
+        qtype = str(question.get("type", "mission"))
+        bridge = bridge_by_type.get(qtype, {})
+        title = qtype.replace("_", " ").title()
+        with st.expander(f"Mission {idx} . {title} . what this is testing", expanded=(idx == 1)):
+            tested = bridge.get("tested_skill") or "Apply the concept to the exact scenario, then state the practical or architectural implication."
+            taught = bridge.get("use_from_booster") or "Use the learning brief, study booster, and the mission scenario. Avoid generic definitions."
+            st.markdown("**Tested skill**")
+            st.write(tested)
+            st.markdown("**Use from booster**")
+            st.info(taught)
+            expected = question.get("expected_focus", []) or []
+            if expected:
+                st.markdown("**Evaluator focus**")
+                for item in expected[:4]:
+                    st.markdown(f"- {item}")
+
+
+def run_draft_verification_action(
+    *,
+    awaiting_run: Path,
+    run_state: Dict[str, Any],
+    topic_id: str,
+    concept_note: Dict[str, Any],
+    architect_note: Dict[str, Any],
+    assessment_doc: Dict[str, Any],
+    answer_path: Path,
+    updated_answers: Dict[str, Any],
+) -> None:
+    save_answers(answer_path, updated_answers)
+    verification = verify_draft_answers(
+        concept_note=build_dataclass(concept_note, ConceptNote),
+        architect_note=build_dataclass(architect_note, ArchitectNote),
+        assessment=build_dataclass(assessment_doc, Assessment),
+        answers_doc=updated_answers,
+    )
+    save_answers(awaiting_run / "draft_verification.json", verification)
+    try:
+        upsert_artifact(
+            run_id=run_state["run_id"],
+            artifact_type="draft_verification",
+            topic_id=topic_id,
+            payload=verification,
+        )
+        append_event(
+            event_type="draft_verified",
+            run_id=run_state["run_id"],
+            topic_id=topic_id,
+            payload=verification.get("summary", {}),
+        )
+    except Exception:
+        pass
+    st.session_state["draft_verification_run_id"] = run_state["run_id"]
+    st.session_state["draft_verification"] = verification
+
+
+def get_draft_verification_to_show(awaiting_run: Path, run_id: str) -> Optional[Dict[str, Any]]:
+    if st.session_state.get("draft_verification_run_id") == run_id:
+        return st.session_state.get("draft_verification")
+    if (awaiting_run / "draft_verification.json").exists():
+        return load_json(awaiting_run / "draft_verification.json")
+    return None
 
 
 def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
@@ -1260,8 +1348,7 @@ def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], arc
                         st.success("Correct. " + str(item.get("explanation", "")))
                     else:
                         st.error("Not quite. " + str(item.get("explanation", "")))
-                        if 0 <= correct_index < len(options):
-                            st.caption("Correct option: " + options[correct_index])
+                        st.caption("Review the Study Booster, then try again. The correct option is intentionally not shown here.")
                 st.divider()
 
 def render_practice_coaching_panel(run_dir: Path) -> None:
@@ -1561,12 +1648,12 @@ with tabs[1]:
         practice_submission = None
         updated_practice_submission = None
 
-        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions"]
+        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions + Verify"]
         if practice_exercise is not None:
             current_tabs.append("⑤ Code Lab")
-            submit_tab_label = "⑥ Verify + Submit"
+            submit_tab_label = "⑥ Submit"
         else:
-            submit_tab_label = "⑤ Verify + Submit"
+            submit_tab_label = "⑤ Submit"
         current_tabs.append(submit_tab_label)
         lesson_tabs = st.tabs(current_tabs)
 
@@ -1587,7 +1674,9 @@ with tabs[1]:
 
         with lesson_tabs[3]:
             st.markdown("### Mission Response")
-            st.caption("Answer in your own words. Good answers should connect concept, example, production impact, and architect control.")
+            st.caption("Answer in your own words. Use the readiness map first so you do not answer a production question with only a definition.")
+            render_mission_bridge(booster, assessment_doc)
+            st.divider()
 
             for i, item in enumerate(answers_doc["answers"], start=1):
                 mission_type = item.get("type", "mission").replace("_", " ").title()
@@ -1615,6 +1704,35 @@ with tabs[1]:
                         "answer": answer_text,
                     }
                 )
+
+            st.markdown("### Save + Verify Draft")
+            st.caption("Save and Verify live here because they are part of writing missions. Final submission is separate.")
+            action_c1, action_c2 = st.columns([1, 1])
+            with action_c1:
+                if st.button("Save Answers", use_container_width=True):
+                    save_answers(answer_path, updated_answers)
+                    st.success("Mission answers saved.")
+            with action_c2:
+                if st.button("Verify Draft", use_container_width=True):
+                    try:
+                        run_draft_verification_action(
+                            awaiting_run=awaiting_run,
+                            run_state=run_state,
+                            topic_id=topic_id,
+                            concept_note=concept_note,
+                            architect_note=architect_note,
+                            assessment_doc=assessment_doc,
+                            answer_path=answer_path,
+                            updated_answers=updated_answers,
+                        )
+                        st.success("Draft verified. No stronger sample answers shown before final evaluation.")
+                    except Exception as exc:
+                        st.error(f"Draft verification failed: {exc}")
+
+            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"])
+            if verification_to_show:
+                st.divider()
+                render_draft_verification_panel(verification_to_show)
 
         if practice_exercise is not None:
             practice_tab_index = 4
@@ -1664,81 +1782,36 @@ with tabs[1]:
             submit_tab_index = 4
 
         with lesson_tabs[submit_tab_index]:
-            st.markdown("### Verify + Submit")
+            st.markdown("### Submit Final Attempt")
             st.markdown(
                 """
                 <div class="save-panel">
-                    <div class="mission-card-title">Submission controls</div>
-                    <div class="small-muted">Save keeps your work. Verify Draft gives copy-safe feedback. Save + Evaluate finalizes the attempt.</div>
+                    <div class="mission-card-title">Final submission</div>
+                    <div class="small-muted">Save and Verify Draft are in the Missions tab. Use this only when you are ready to lock the attempt for evaluation.</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            save_c1, save_c2, save_c3 = st.columns([1, 1, 1])
+            if practice_exercise is not None:
+                st.info("Code Lab, if present, is included in final evaluation. Run it before submitting.")
 
-            with save_c1:
-                if st.button("Save Answers", use_container_width=True):
-                    save_answers(answer_path, updated_answers)
-                    if updated_practice_submission is not None and practice_submission_path is not None:
-                        save_answers(practice_submission_path, updated_practice_submission)
-                    st.success("Answers saved.")
+            if st.button("Save + Evaluate", use_container_width=True):
+                save_answers(answer_path, updated_answers)
+                if updated_practice_submission is not None and practice_submission_path is not None:
+                    save_answers(practice_submission_path, updated_practice_submission)
+                with st.spinner("Saving answers, running practical checks, and evaluating mission responses. This finalizes this attempt..."):
+                    ok, output = run_module("src.evaluate_lesson")
+                record_action_result("Save + Evaluate", ok, output)
+                if ok:
+                    st.session_state.pop("draft_verification", None)
+                    st.session_state.pop("draft_verification_run_id", None)
+                    st.rerun()
 
-            with save_c2:
-                if st.button("Verify Draft", use_container_width=True):
-                    save_answers(answer_path, updated_answers)
-                    if updated_practice_submission is not None and practice_submission_path is not None:
-                        save_answers(practice_submission_path, updated_practice_submission)
-                    try:
-                        verification = verify_draft_answers(
-                            concept_note=build_dataclass(concept_note, ConceptNote),
-                            architect_note=build_dataclass(architect_note, ArchitectNote),
-                            assessment=build_dataclass(assessment_doc, Assessment),
-                            answers_doc=updated_answers,
-                        )
-                        save_answers(awaiting_run / "draft_verification.json", verification)
-                        try:
-                            upsert_artifact(
-                                run_id=run_state["run_id"],
-                                artifact_type="draft_verification",
-                                topic_id=topic_id,
-                                payload=verification,
-                            )
-                            append_event(
-                                event_type="draft_verified",
-                                run_id=run_state["run_id"],
-                                topic_id=topic_id,
-                                payload=verification.get("summary", {}),
-                            )
-                        except Exception:
-                            pass
-                        st.session_state["draft_verification_run_id"] = run_state["run_id"]
-                        st.session_state["draft_verification"] = verification
-                        st.success("Draft verified. No stronger sample answers shown before final evaluation.")
-                    except Exception as exc:
-                        st.error(f"Draft verification failed: {exc}")
-
-            with save_c3:
-                if st.button("Save + Evaluate", use_container_width=True):
-                    save_answers(answer_path, updated_answers)
-                    if updated_practice_submission is not None and practice_submission_path is not None:
-                        save_answers(practice_submission_path, updated_practice_submission)
-                    with st.spinner("Saving answers, running practical checks, and evaluating mission responses. This finalizes this attempt..."):
-                        ok, output = run_module("src.evaluate_lesson")
-                    record_action_result("Save + Evaluate", ok, output)
-                    if ok:
-                        st.session_state.pop("draft_verification", None)
-                        st.session_state.pop("draft_verification_run_id", None)
-                        st.rerun()
-
-            verification_to_show = None
-            if st.session_state.get("draft_verification_run_id") == run_state["run_id"]:
-                verification_to_show = st.session_state.get("draft_verification")
-            elif (awaiting_run / "draft_verification.json").exists():
-                verification_to_show = load_json(awaiting_run / "draft_verification.json")
-
+            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"])
             if verification_to_show:
                 st.divider()
+                st.caption("Latest draft verification from Missions tab")
                 render_draft_verification_panel(verification_to_show)
 
 

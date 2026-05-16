@@ -123,6 +123,51 @@ TOPIC_COACHING_PROFILES: Dict[str, Dict[str, Any]] = {
             "ties threshold choice to business cost",
         ],
     },
+    "mlf_013": {
+        "core_concepts": [
+            "Categorical encoding converts labels into numeric model inputs without inventing false meaning.",
+            "Nominal categories have no order; ordinal categories have meaningful order.",
+            "Encoders must be fitted on training data only and reused unchanged for validation, test, and production.",
+            "Unseen categories need explicit handling such as an unknown bucket, safe ignore behavior, monitoring, and retraining review.",
+            "High-cardinality features may need hashing, target encoding with leakage controls, or embeddings rather than naive one-hot encoding.",
+        ],
+        "common_misconceptions": [
+            {
+                "pattern": ["ml models are statistical models and do not understand categorical information"],
+                "issue": "This is directionally true but too generic for this topic.",
+                "correction": "Name the category type, encoding choice, unseen-category handling, and training-serving consistency controls.",
+            },
+            {
+                "pattern": ["if the values are ordinal or binary, then encoding will be 1, 2 or 3 and 0 and 1"],
+                "issue": "Ordinal encoding is not automatically valid for every ordered-looking label.",
+                "correction": "Use ordinal encoding only when the order is meaningful for the model decision and the numeric spacing will not mislead the model.",
+            },
+            {
+                "pattern": ["retrain the model", "completely retrain"],
+                "issue": "Retraining is not the first runtime control for every unseen category.",
+                "correction": "Production needs immediate safe handling first: unknown bucket or safe ignore behavior, monitoring of unknown-category rate, then retraining review if the new category is frequent or important.",
+            },
+            {
+                "pattern": ["placeholder column"],
+                "issue": "A placeholder column alone is vague.",
+                "correction": "State whether the design uses an unknown bucket, handle_unknown='ignore'-style behavior, or a contract violation route, and how it is monitored.",
+            },
+        ],
+        "golden_answers": {
+            "concept_check": "Encoding categorical variables safely means converting labels into numeric signals without adding fake meaning or breaking production. Nominal values such as station, equipment, and electrical_board should not be assigned 1, 2, 3 because that creates a false order. One-hot encoding is often safer for nominal categories. Ordinal values such as low, medium, high can use ordinal encoding only when the order is meaningful. The encoder must be fitted on training data only, saved with the model, reused in inference, and designed for unseen categories.",
+            "tiny_hands_on": "One-hot encoding Size creates three binary columns: size_small, size_medium, and size_large. A Small row becomes size_small=1, size_medium=0, size_large=0; Medium becomes 0,1,0; Large becomes 0,0,1. If Extra Large appears after training, the pipeline should not crash or create arbitrary live columns. It should use an explicit unknown-category strategy such as an unknown bucket or safe ignore behavior, monitor unknown rates, and trigger retraining review if the new category becomes common or business-important.",
+            "failure_diagnosis": "The observed symptom is prediction failure when a new category appears. The likely cause is that the training-time encoder knew only the original categories, while the production pipeline received an unseen category with no defined mapping. Prevention requires saving and reusing the fitted encoder, enabling explicit unknown-category handling, enforcing a feature contract, and monitoring the rate of unseen categories so retraining can be triggered when needed.",
+            "architect_decision": "I would first classify the categorical fields: nominal, ordinal, binary, or high-cardinality. For nominal fields I would consider one-hot with unknown handling; for ordinal fields I would encode order only if meaningful; for high-cardinality user or item IDs I would consider hashing, target encoding with leakage controls, or embeddings. I would fit encoders on training data only, persist them with the model artifact, enforce feature contracts, monitor unknown-category rate, and define a retraining trigger and owner.",
+            "teachback": "I would explain it this way: models need numbers, but the way we convert labels into numbers can change what the model thinks the data means. If we encode station, equipment, and electrical_board as 1, 2, 3, the model may assume an order that does not exist. If a new category appears in production and the encoder cannot handle it, predictions can fail. Safe encoding means preserving meaning, preventing leakage, and designing for unseen categories before go-live.",
+        },
+        "practical_checks": [
+            "separates nominal, ordinal, binary, and high-cardinality categories",
+            "does not create fake numeric order for nominal values",
+            "mentions training-only fitting and saved encoder reuse",
+            "handles unseen categories explicitly",
+            "names production controls such as feature contracts, unknown-rate monitoring, and retraining triggers",
+        ],
+    },
     "checkpoint_ml_foundations_001": {
         "core_concepts": [
             "ML foundations must be connected as one evaluation discipline.",

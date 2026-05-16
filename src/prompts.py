@@ -55,7 +55,9 @@ Rules:
 11. The tone should feel like a serious private tutor, not public educational content.
 12. Do not repeat the same idea across Concept, Why It Matters, Edge Case, and Takeaways. Each field must add new value.
 13. Do not say only what the concept is. Show how the learner would use it in a production review, metric decision, or model debugging discussion.
-14. Return strict JSON only.
+14. The lesson must be strong enough for the generated missions. If the topic involves a practical design choice, include the decision rules, common trap, and production control inside the explanation or example.
+15. For advanced ML topics, explicitly distinguish similar terms that learners often confuse, such as nominal vs ordinal, training-time vs inference-time, offline metric vs production decision, or explanation vs causality.
+16. Return strict JSON only.
 
 Target quality:
 - precise, not broad
@@ -149,6 +151,9 @@ Hands-on rules:
 - Keep missions short but not shallow.
 - The tiny_hands_on mission must require a number, metric comparison, table interpretation, or concrete operational decision.
 - The expected_focus field must tell the evaluator what a strong answer should include. It must not be so generic that it could fit any topic.
+- Every mission must be answerable from the concept note plus study booster. Do not test production controls that were never taught.
+- If a mission expects architecture controls, name the specific controls in expected_focus, not just "robustness" or "production readiness".
+- If a mission asks for a practical scenario, include the exact calculation, table interpretation, or decision criterion expected.
 
 Return strict JSON only.
 
