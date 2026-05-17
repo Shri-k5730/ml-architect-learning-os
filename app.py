@@ -20,8 +20,7 @@ from src.utils.cloud_state import repair_cloud_state_on_startup
 from src.utils.code_runner import run_code_exercise
 from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
-from src.agents.expert_blueprints import get_topic_blueprint
-from src.agents.tutor_narrative import build_tutor_narrative
+from src.agents.tutor_narrative import get_tutor_narrative
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
 from src.utils.supabase_store import append_event, upsert_artifact
@@ -1243,66 +1242,39 @@ def render_learning_brief(concept_note: Dict[str, Any], architect_note: Dict[str
         render_static_card("Interview Framing", architect_note.get("interview_framing", ""))
 
 
-def render_expert_blueprint_lesson(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any]) -> None:
-    """Render the blueprint as a tutor narrative, not a field dump.
 
-    Patch 020 created the source-of-truth blueprint. Patch 021 changes the
-    learning experience: intuition first, mechanism second, architecture third,
-    then mission-specific preparation. Existing active runs may still have older
-    generated notes, so this runtime overlay remains the learning source.
+
+def render_tutor_narrative_panel(topic_id: str) -> bool:
+    """Render expert-tutor narrative when a blueprint exists.
+
+    Returns True when rendered so the caller can skip the older generic learning brief.
     """
-    blueprint = get_topic_blueprint(topic_id)
-    if not blueprint:
-        render_learning_brief(concept_note, architect_note)
-        return
-
-    narrative = build_tutor_narrative(topic_id, blueprint)
+    narrative = get_tutor_narrative(topic_id)
+    if not narrative:
+        return False
 
     st.markdown("### Expert Tutor Lesson")
-    st.caption("Learn the idea like a teacher would explain it: intuition → mechanism → example → architect decision → mission prep.")
+    st.caption("This is not a reference card. Read it as the teacher walkthrough before missions.")
 
-    render_static_card("Start Here: The Intuition", narrative.get("intuition", ""), "callout-good")
+    sections = narrative.get("sections", []) or []
+    for section in sections:
+        style = str(section.get("style", "normal"))
+        css_class = "callout-good" if style == "good" else "callout-risk" if style == "risk" else ""
+        render_static_card(section.get("heading", "Section"), section.get("body", ""), css_class)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Precise Definition", narrative.get("precise_definition", blueprint.get("definition", "")))
-    with c2:
-        render_static_card("Why This Concept Exists", narrative.get("why_it_exists", blueprint.get("why_it_exists", "")))
-
-    render_static_card("Slow Walkthrough: What Actually Changes", narrative.get("mechanism_walkthrough", blueprint.get("core_mechanism", "")), "callout-good")
-    render_static_card("Worked Example, Step by Step", narrative.get("worked_example_slow", blueprint.get("worked_example", "")))
-
-    sensitivity = narrative.get("model_sensitivity", []) or []
-    if sensitivity:
-        render_static_card("Where This Matters Most", sensitivity, "callout-good")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Nuances You Should Not Miss", narrative.get("nuances", blueprint.get("nuances", [])))
-    with c2:
-        render_static_card("Common Traps", narrative.get("common_traps", blueprint.get("common_confusions", [])), "callout-risk")
-
-    st.markdown("### Architect View")
-    render_static_card("Architect Translation", narrative.get("architect_translation", blueprint.get("architect_implications", [])), "callout-good")
-    render_static_card("System Design Controls", narrative.get("system_controls", blueprint.get("system_controls", [])))
-
-    st.markdown("### Mission Prep")
     mission_prep = narrative.get("mission_prep", []) or []
     if mission_prep:
+        st.markdown("### Mission-by-Mission Prep")
+        st.caption("This is the bridge between what was taught and what you are about to answer. Use it to plan, not to copy.")
         for item in mission_prep:
-            title = item.get("title", "Mission prep") if isinstance(item, dict) else "Mission prep"
-            body = item.get("body", "") if isinstance(item, dict) else item
-            with st.expander(str(title), expanded=str(title).startswith("Mission 1")):
-                if isinstance(body, list):
-                    for line in body:
-                        st.markdown(f"- {line}")
-                else:
-                    st.write(body)
-
-    anti_patterns = narrative.get("avoid_when_answering", []) or []
-    if anti_patterns:
-        render_static_card("Do Not Waste Words On This", anti_patterns, "callout-risk")
-
+            with st.expander(str(item.get("title", "Mission")), expanded=False):
+                st.markdown("**Question**")
+                st.write(item.get("question", ""))
+                st.markdown("**What this is really testing**")
+                st.info(item.get("what_it_tests", ""))
+                st.markdown("**How to answer without overexplaining**")
+                st.success(item.get("how_to_answer", ""))
+    return True
 
 
 def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
@@ -1802,7 +1774,8 @@ with tabs[1]:
         lesson_tabs = st.tabs(current_tabs)
 
         with lesson_tabs[0]:
-            render_expert_blueprint_lesson(topic_id, concept_note, architect_note)
+            if not render_tutor_narrative_panel(topic_id):
+                render_learning_brief(concept_note, architect_note)
 
         with lesson_tabs[1]:
             render_booster_walkthrough(booster)

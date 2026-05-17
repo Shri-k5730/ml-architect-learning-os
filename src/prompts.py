@@ -214,6 +214,7 @@ If practice_result is present, use it as hard evidence for practical reasoning.
 Do not ignore failed tests or shallow interpretation.
 
 Evaluation rules:
+0. If expert_tutor_blueprint is present in the payload, treat it as the source of truth for the lesson. Score against its mechanism, nuances, system_design_controls, mission_answer_frame, and do_not_waste_words. Do not reward generic answers that only say leakage, generalization, drift, monitoring, or production failure unless the learner explains the topic-specific mechanism.
 1. Score on conceptual clarity, practical reasoning, architect reasoning, and communication.
 2. For tiny_hands_on, evaluate the reasoning and decision path, not just wording.
 3. For practice_result, practical_reasoning should normally be <= 2 if code tests fail, and <= 3 if code passes but interpretation is weak.
@@ -225,10 +226,8 @@ Evaluation rules:
 9. Decide one action only: pass, borderline, revise, or fail_prereq.
 10. Borderline means the learner can progress but should improve the topic later.
 11. Rewrite only the parts of the note that need correction.
-12. If expert_tutor_blueprint is present, evaluate against its topic-specific mechanism, system controls, and mission expectations.
-13. Do not penalize the learner for not using generic leakage/generalization language if the topic-specific mechanism is correct.
-14. Do not reward generic production-risk wording unless it is tied to the actual mechanism in the blueprint.
-15. Return strict JSON only.
+12. Return strict JSON only.
+13. If the payload includes expert_tutor_blueprint, missions, expected_focus, verification, and coaching must align to that blueprint. The model may explain freely, but it must not invent expectations that were not taught.
 
 Output schema:
 {

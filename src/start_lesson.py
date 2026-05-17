@@ -41,11 +41,12 @@ from src.checkpoints.checkpoint_bank import (
     build_checkpoint_concept_note,
     is_checkpoint_topic,
 )
-from src.agents.expert_blueprints import (
-    build_architect_note_from_blueprint,
-    build_assessment_from_blueprint,
-    build_concept_note_from_blueprint,
-    has_topic_blueprint,
+from src.blueprints.advanced_ml import (
+    blueprint_context,
+    blueprint_to_architect_note,
+    blueprint_to_assessment,
+    blueprint_to_concept_note,
+    has_blueprint,
 )
 
 
@@ -615,31 +616,28 @@ def main() -> None:
 
         assessment = build_checkpoint_assessment(topic)
         write_log(run_id, "Checkpoint assessment generated from deterministic checkpoint bank")
-    elif has_topic_blueprint(topic.topic_id):
-        concept_note = build_concept_note_from_blueprint(topic)
+    elif has_blueprint(topic.topic_id):
+        concept_note = blueprint_to_concept_note(topic.topic_id)
+        architect_note = blueprint_to_architect_note(topic.topic_id)
+        assessment = blueprint_to_assessment(topic.topic_id)
         teacher_diagnostics = {
-            "status": "expert_blueprint_content",
-            "blueprint_version": "expert_tutor_blueprint_v1_2026_05",
-            "message": "Advanced ML lesson generated from deterministic expert tutor blueprint.",
+            "status": "expert_blueprint_static_content",
+            "blueprint_version": blueprint_context(topic.topic_id).get("blueprint_version"),
+            "message": "Advanced ML lesson generated from Expert Tutor Blueprint. Teacher, architect lens, missions, MCQs, verifier, evaluator, and coaching share the same source of truth.",
         }
         write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
         write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_json(f"runs/{run_id}/lesson_blueprint.json", blueprint_context(topic.topic_id))
         write_markdown(
             f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
             concept_note_to_markdown(concept_note),
         )
-        write_log(run_id, "Concept note generated from expert tutor blueprint")
-
-        architect_note = build_architect_note_from_blueprint(topic)
-        write_json(f"runs/{run_id}/architect_note.json", architect_note)
         write_markdown(
             f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
             architect_note_to_markdown(architect_note),
         )
-        write_log(run_id, "Architect note generated from expert tutor blueprint")
-
-        assessment = build_assessment_from_blueprint(topic)
-        write_log(run_id, "Assessment generated from expert tutor blueprint")
+        write_log(run_id, "Advanced ML lesson generated from expert tutor blueprint")
     else:
         teacher_llm_callable = build_llm_callable("teacher")
         architect_llm_callable = build_llm_callable("architect_lens")
@@ -763,6 +761,8 @@ def main() -> None:
             practice_exercise=practice_exercise,
             practice_submission_template=practice_submission_template,
         )
+        if has_blueprint(topic.topic_id):
+            upsert_artifact(run_id, "lesson_blueprint", topic.topic_id, payload=blueprint_context(topic.topic_id))
         write_log(run_id, "Supabase persistence completed for lesson start.")
     except Exception as exc:
         write_log(run_id, f"Supabase lesson-start persistence failed but local lesson remains available: {exc}")

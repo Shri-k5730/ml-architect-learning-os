@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from src.agents.expert_blueprints import build_booster_from_blueprint
+from src.blueprints.advanced_ml import blueprint_to_booster
 
 
 # Study Booster is a deterministic, copy-safe learning layer.
@@ -457,23 +457,11 @@ def _mission_bridge_from_questions(booster: Dict[str, Any], questions: List[Dict
 def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> Dict[str, Any]:
     """Return copy-safe pre-mission support aligned to final missions.
 
-    Patch 020: topic blueprints are now the preferred source for Advanced ML
-    teaching alignment. They keep the lesson, missions, MCQs, verifier, and
-    coaching pointed at one mechanism instead of generic production-risk wording.
-    Legacy ADVANCED_ML_BOOSTERS remain as fallback for safety.
+    Patch 022: for Advanced ML, use the Expert Tutor Blueprint as the source of truth.
+    The older ADVANCED_ML_BOOSTERS table remains as a fallback for backward compatibility.
     """
-    blueprint_booster = build_booster_from_blueprint(topic_id)
+    blueprint_booster = blueprint_to_booster(topic_id)
     if blueprint_booster:
-        questions = assessment_doc.get("questions", []) or []
-        # Keep mission focus from the actual questions too, especially for older
-        # active runs that were generated before blueprints existed.
-        mission_focus = list(blueprint_booster.get("mission_focus", []) or [])
-        for question in questions:
-            for item in (question.get("expected_focus", []) or [])[:2]:
-                text = str(item)
-                if text and text not in mission_focus:
-                    mission_focus.append(text)
-        blueprint_booster["mission_focus"] = mission_focus[:8]
         return blueprint_booster
 
     title = concept_note.get("title", topic_id)

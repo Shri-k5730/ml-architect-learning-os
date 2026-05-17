@@ -15,7 +15,7 @@ from src.schemas import (
     UserAnswer,
 )
 from src.utils.validator import ValidationError, build_dataclass
-from src.agents.expert_blueprints import get_topic_blueprint
+from src.blueprints.advanced_ml import blueprint_context
 
 
 class EvaluatorRefinerAgentError(Exception):
@@ -44,9 +44,12 @@ def build_evaluator_refiner_payload(
         "learning_goal": learner_profile.get("learning_goal", ""),
         "priority_contexts": learner_profile.get("priority_contexts", []),
     }
-    blueprint = get_topic_blueprint(concept_note.topic_id)
-    if blueprint is not None:
+    blueprint = blueprint_context(concept_note.topic_id)
+    if blueprint:
         payload["expert_tutor_blueprint"] = blueprint
+        payload["evaluation_instruction"] = (
+            "Evaluate against expert_tutor_blueprint. Do not reward generic production-risk language unless the answer names the topic-specific mechanism, evidence, and control. Penalize overexplaining the basic definition while missing the practical control."
+        )
     if practice_exercise is not None:
         payload["practice_exercise"] = practice_exercise
     if practice_submission is not None:
