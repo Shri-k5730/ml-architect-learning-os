@@ -21,6 +21,7 @@ from src.utils.code_runner import run_code_exercise
 from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
 from src.agents.expert_blueprints import get_topic_blueprint
+from src.agents.tutor_narrative import build_tutor_narrative
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
 from src.utils.supabase_store import append_event, upsert_artifact
@@ -1243,42 +1244,64 @@ def render_learning_brief(concept_note: Dict[str, Any], architect_note: Dict[str
 
 
 def render_expert_blueprint_lesson(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any]) -> None:
-    """Render Patch 020 expert tutor blueprint when available.
+    """Render the blueprint as a tutor narrative, not a field dump.
 
-    This deliberately teaches the topic-specific mechanism before production
-    controls. Existing active runs may still have older generated concept notes;
-    the blueprint overlay prevents the learner from being trapped by that stale
-    shallow content.
+    Patch 020 created the source-of-truth blueprint. Patch 021 changes the
+    learning experience: intuition first, mechanism second, architecture third,
+    then mission-specific preparation. Existing active runs may still have older
+    generated notes, so this runtime overlay remains the learning source.
     """
     blueprint = get_topic_blueprint(topic_id)
     if not blueprint:
         render_learning_brief(concept_note, architect_note)
         return
 
+    narrative = build_tutor_narrative(topic_id, blueprint)
+
     st.markdown("### Expert Tutor Lesson")
-    st.caption("This is the source-of-truth explanation for this topic. Learn the mechanism first, then the architect controls.")
+    st.caption("Learn the idea like a teacher would explain it: intuition → mechanism → example → architect decision → mission prep.")
 
-    render_static_card("What It Is", blueprint.get("definition", ""), "callout-good")
-    render_static_card("Why It Exists", blueprint.get("why_it_exists", ""))
-    render_static_card("Core Mechanism", blueprint.get("core_mechanism", ""), "callout-good")
-    render_static_card("Worked Example", blueprint.get("worked_example", ""))
+    render_static_card("Start Here: The Intuition", narrative.get("intuition", ""), "callout-good")
 
     c1, c2 = st.columns(2)
     with c1:
-        render_static_card("Nuances", blueprint.get("nuances", []))
+        render_static_card("Precise Definition", narrative.get("precise_definition", blueprint.get("definition", "")))
     with c2:
-        render_static_card("Common Confusions", blueprint.get("common_confusions", []), "callout-risk")
+        render_static_card("Why This Concept Exists", narrative.get("why_it_exists", blueprint.get("why_it_exists", "")))
+
+    render_static_card("Slow Walkthrough: What Actually Changes", narrative.get("mechanism_walkthrough", blueprint.get("core_mechanism", "")), "callout-good")
+    render_static_card("Worked Example, Step by Step", narrative.get("worked_example_slow", blueprint.get("worked_example", "")))
+
+    sensitivity = narrative.get("model_sensitivity", []) or []
+    if sensitivity:
+        render_static_card("Where This Matters Most", sensitivity, "callout-good")
 
     c1, c2 = st.columns(2)
     with c1:
-        render_static_card("When This Matters", blueprint.get("when_it_matters", ""))
+        render_static_card("Nuances You Should Not Miss", narrative.get("nuances", blueprint.get("nuances", [])))
     with c2:
-        render_static_card("When This Matters Less", blueprint.get("when_it_matters_less", ""))
+        render_static_card("Common Traps", narrative.get("common_traps", blueprint.get("common_confusions", [])), "callout-risk")
 
     st.markdown("### Architect View")
-    render_static_card("Architect Implications", blueprint.get("architect_implications", []), "callout-good")
-    render_static_card("System Design Controls", blueprint.get("system_controls", []))
-    render_static_card("Mission Answer Frame", blueprint.get("mission_answer_frame", []))
+    render_static_card("Architect Translation", narrative.get("architect_translation", blueprint.get("architect_implications", [])), "callout-good")
+    render_static_card("System Design Controls", narrative.get("system_controls", blueprint.get("system_controls", [])))
+
+    st.markdown("### Mission Prep")
+    mission_prep = narrative.get("mission_prep", []) or []
+    if mission_prep:
+        for item in mission_prep:
+            title = item.get("title", "Mission prep") if isinstance(item, dict) else "Mission prep"
+            body = item.get("body", "") if isinstance(item, dict) else item
+            with st.expander(str(title), expanded=str(title).startswith("Mission 1")):
+                if isinstance(body, list):
+                    for line in body:
+                        st.markdown(f"- {line}")
+                else:
+                    st.write(body)
+
+    anti_patterns = narrative.get("avoid_when_answering", []) or []
+    if anti_patterns:
+        render_static_card("Do Not Waste Words On This", anti_patterns, "callout-risk")
 
 
 
