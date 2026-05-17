@@ -7,7 +7,6 @@ from src.agents.topic_coaching_profiles import (
     get_topic_coaching_profile,
     profile_golden_answer,
 )
-from src.blueprints.advanced_ml import blueprint_context
 from src.schemas import (
     ArchitectNote,
     Assessment,
@@ -102,36 +101,6 @@ def _type_specific_gaps(question_type: str, answer: str) -> List[str]:
     return gaps[:2]
 
 
-
-
-def _blueprint_gaps(topic_id: str, question_type: str, answer: str) -> List[str]:
-    blueprint = blueprint_context(topic_id)
-    if not blueprint:
-        return []
-    answer_l = _normalize(answer)
-    gaps: List[str] = []
-
-    if question_type in {"concept_check", "teachback"}:
-        mechanism_words = _meaningful_words(str(blueprint.get("core_mechanism", "")))
-        if mechanism_words and sum(1 for word in mechanism_words if word in answer_l) < 2:
-            gaps.append("Explain the topic-specific mechanism from the lesson, not only the broad definition.")
-
-    if question_type == "architect_decision":
-        controls = blueprint.get("system_design_controls", []) or []
-        hits = sum(1 for control in controls if any(word in answer_l for word in _meaningful_words(str(control))))
-        if controls and hits < 2:
-            gaps.append("Name the actual system design controls taught in the lesson, not generic production safeguards.")
-
-    if question_type == "failure_diagnosis":
-        if not any(token in answer_l for token in ["symptom", "cause", "mechanism", "evidence", "prevent", "control", "pipeline", "threshold", "encoder", "contract", "monitor"]):
-            gaps.append("Separate symptom, mechanism, evidence, and prevention.")
-
-    if len(answer.split()) > 170:
-        for item in blueprint.get("do_not_waste_words", [])[:2]:
-            gaps.append(str(item))
-
-    return gaps[:4]
-
 def _question_quality(
     question_id: str,
     answer: str,
@@ -153,6 +122,52 @@ def _question_quality(
     return "strong"
 
 
+
+
+def _exact_topic_findings(topic_id: str, question_id: str, question_type: str, answer: str) -> tuple[List[str], List[Dict[str, str]]]:
+    """Deterministic precision feedback for known recurring mistakes.
+
+    This prevents lazy coaching such as "add a concrete control" when the actual issue is
+    a wrong formula, an imprecise term, or a missing fit/transform boundary.
+    """
+    answer_l = _normalize(answer)
+    missing: List[str] = []
+    findings: List[Dict[str, str]] = []
+
+    def add(evidence: str, issue: str, correction: str) -> None:
+        missing.append(issue)
+        findings.append({"evidence": evidence, "issue": issue, "correction": correction})
+
+    if topic_id == "mlf_014":
+        if question_id == "q2" or question_type == "tiny_hands_on":
+            if "sqrt" in answer_l or "sum(x-mean" in answer_l or "sum (x-mean" in answer_l:
+                add(
+                    "standardization formula",
+                    "The z-score transformation formula is written incorrectly, even if your final values are close.",
+                    "Use z = (x - mean) / standard_deviation. The square-root expression is for calculating standard deviation, not transforming each value.",
+                )
+            if "x-min/max-min" in answer_l or "x - min/max" in answer_l:
+                add(
+                    "min-max formula",
+                    "The min-max formula needs parentheses to avoid ambiguity.",
+                    "Write min-max scaling as (x - min) / (max - min).",
+                )
+        if question_id == "q3" or question_type == "failure_diagnosis":
+            if "overfit" in answer_l and "parameter" not in answer_l:
+                add(
+                    "overfits the model",
+                    "The leakage mechanism is preprocessing-parameter contamination, not only generic overfitting.",
+                    "Say the scaler learned min/max/mean/std from test data, so evaluation was contaminated before production.",
+                )
+            if "fit-transform" in answer_l or "fit transformed" in answer_l or "fit-transformed" in answer_l:
+                add(
+                    "fit-transform",
+                    "Fit/transform wording is imprecise.",
+                    "State the scaler was fitted on full data; validation, test, and production should only be transformed with the train-fitted scaler.",
+                )
+
+    return missing[:4], findings[:4]
+
 def _missing_points(
     topic_id: str,
     expected_focus: List[str],
@@ -167,9 +182,6 @@ def _missing_points(
     for gap in _type_specific_gaps(question_type, answer):
         if gap not in missing:
             missing.append(gap)
-    for gap in _blueprint_gaps(topic_id, question_type, answer):
-        if gap not in missing:
-            missing.append(gap)
 
     misconceptions = _topic_misconceptions(topic_id, answer)
     for item in misconceptions:
@@ -177,10 +189,18 @@ def _missing_points(
         if issue not in missing:
             missing.append(issue)
 
-    if not missing:
-        missing.append("The answer is directionally correct. To make it stronger, add a more concrete metric, failure mode, or production control.")
+    exact_missing, exact_findings = _exact_topic_findings(topic_id, "", question_type, answer)
+    # question_id is not available in this helper signature for backward compatibility;
+    # question_type and topic still catch the major formula/mechanism issues.
+    for issue in exact_missing:
+        if issue not in missing:
+            missing.append(issue)
+    misconceptions.extend(exact_findings)
 
-    return missing[:5], misconceptions
+    if not missing:
+        missing.append("The answer is directionally correct. To make it stronger, name the exact mechanism, calculation check, or production control for this specific topic.")
+
+    return missing[:5], misconceptions[:5]
 
 
 def _fallback_better_answer(
@@ -190,22 +210,7 @@ def _fallback_better_answer(
     concept_note: ConceptNote,
     architect_note: ArchitectNote,
 ) -> str:
-    blueprint = blueprint_context(concept_note.topic_id)
     focus_sentence = "; ".join(expected_focus[:3]) if expected_focus else "the concept, practical behavior, and production implication"
-    if blueprint:
-        frame = "; ".join(blueprint.get("mission_answer_frame", [])[:4])
-        mechanism = blueprint.get("core_mechanism", "")
-        controls = ", ".join(blueprint.get("system_design_controls", [])[:4])
-        if question_type == "concept_check":
-            return f"A stronger answer should define the concept, explain this mechanism, and connect it to one control. Mechanism: {mechanism} Frame: {frame}."
-        if question_type == "tiny_hands_on":
-            return f"A stronger answer should use the exact numbers or scenario first, then interpret using the topic mechanism. Cover: {focus_sentence}."
-        if question_type == "failure_diagnosis":
-            return f"A stronger answer should write symptom → mechanism → evidence → prevention. Use the mechanism: {mechanism}"
-        if question_type == "architect_decision":
-            return f"A stronger answer should name concrete controls from this topic: {controls}. Then state owner, threshold, or response path where relevant."
-        if question_type == "teachback":
-            return f"A stronger answer should explain simply, use one business example, and keep the practical control visible. Avoid overexplaining the definition. Frame: {frame}."
 
     if question_type == "concept_check":
         return (
@@ -215,7 +220,7 @@ def _fallback_better_answer(
 
     if question_type == "tiny_hands_on":
         return (
-            "A stronger answer should use the numbers or scenario in the question, make a concrete comparison, "
+            "A stronger answer should show the exact calculation path, separate formula mistakes from final values, "
             f"and state the practical decision. Cover: {focus_sentence}."
         )
 
@@ -267,11 +272,6 @@ def _why_better(question_type: str) -> str:
 
 
 def _architect_upgrade(question_type: str, architect_note: ArchitectNote) -> str:
-    blueprint = blueprint_context(architect_note.topic_id)
-    if blueprint:
-        controls = ", ".join(blueprint.get("system_design_controls", [])[:5])
-        if controls:
-            return f"Upgrade by naming the topic-specific controls and operational response. For this topic, useful controls are: {controls}."
     if question_type == "architect_decision":
         return "Upgrade by naming the exact controls: validation gate, metric threshold, monitoring signal, fallback policy, retraining trigger, and response owner."
     if question_type == "failure_diagnosis":
@@ -332,7 +332,6 @@ def generate_answer_coaching(
 
     return {
         "topic_id": concept_note.topic_id,
-        "mode": "blueprint_grounded_evidence_bound",
-        "blueprint_version": blueprint_context(concept_note.topic_id).get("blueprint_version"),
+        "mode": "topic_grounded_evidence_bound",
         "coaching": coaching,
     }

@@ -4,8 +4,8 @@ import re
 from typing import Any, Dict, List
 
 from src.agents.topic_coaching_profiles import get_topic_coaching_profile
+from src.agents.writing_assist import analyze_answer_text
 from src.schemas import ArchitectNote, Assessment, ConceptNote
-from src.blueprints.advanced_ml import blueprint_context
 
 
 def _normalize(text: str) -> str:
@@ -87,37 +87,6 @@ def _type_gap(question_type: str, answer: str) -> List[str]:
     return gaps[:3]
 
 
-
-
-def _blueprint_specific_gaps(topic_id: str, question_type: str, answer: str) -> List[str]:
-    blueprint = blueprint_context(topic_id)
-    if not blueprint:
-        return []
-    answer_l = _normalize(answer)
-    gaps: List[str] = []
-
-    if question_type == "architect_decision":
-        controls = blueprint.get("system_design_controls", []) or []
-        control_hits = sum(1 for control in controls if any(word in answer_l for word in _meaningful_words(str(control))))
-        if controls and control_hits < 2:
-            gaps.append("Add topic-specific system controls from the lesson, not generic monitoring language.")
-
-    if question_type in {"concept_check", "teachback"}:
-        mechanism_words = _meaningful_words(str(blueprint.get("core_mechanism", "")))
-        hits = sum(1 for word in mechanism_words if word in answer_l)
-        if mechanism_words and hits < 2:
-            gaps.append("Explain the topic-specific mechanism, not only the broad purpose of the concept.")
-
-    if question_type == "failure_diagnosis":
-        if not any(token in answer_l for token in ["mechanism", "evidence", "symptom", "cause", "prevent", "control", "pipeline", "threshold", "encoder", "contract", "monitor"]):
-            gaps.append("Use symptom → mechanism → evidence → prevention. The current draft may be too generic.")
-
-    if len(answer.split()) > 170:
-        for banned in blueprint.get("do_not_waste_words", [])[:2]:
-            gaps.append(str(banned))
-
-    return gaps[:3]
-
 def _vague_language_penalty(answer: str) -> int:
     answer_l = _normalize(answer)
     vague_terms = ["average", "good", "bad", "better outcome", "balance between", "properly", "accurately set"]
@@ -194,14 +163,14 @@ def verify_draft_answers(
         expected_gaps = _coverage_gap(question.expected_focus, answer)
         concept_findings = _profile_gap(concept_note.topic_id, answer)
         type_gaps = _type_gap(question.type, answer)
-        blueprint_gaps = _blueprint_specific_gaps(concept_note.topic_id, question.type, answer)
 
         all_gaps = []
-        for gap in [*expected_gaps, *type_gaps, *blueprint_gaps]:
+        for gap in [*expected_gaps, *type_gaps]:
             if gap not in all_gaps:
                 all_gaps.append(gap)
 
         score = _readiness_score(answer, len(all_gaps), len(concept_findings))
+        writing_assist = analyze_answer_text(answer, question.type)
         items.append(
             {
                 "question_id": question.question_id,
@@ -212,6 +181,11 @@ def verify_draft_answers(
                 "likely_score": score,  # backward-compatible UI key; not a star prediction
                 "coverage_gaps": all_gaps[:4],
                 "misconceptions": concept_findings,
+                "writing_assist": writing_assist,
+                "language_noise_note": (
+                    "Language noise detected. Fix spelling/precision so the evaluator can focus on your ML reasoning."
+                    if writing_assist.get("has_language_noise") else ""
+                ),
                 "next_improvement": _next_action(question.type, all_gaps, concept_findings),
                 "copy_safe": True,
             }
@@ -240,7 +214,7 @@ def verify_draft_answers(
                 else "Evaluable. This still does not guarantee 4 stars; final evaluation checks consistency across all answers."
             ),
         },
-        "core_concepts_to_check": (blueprint_context(concept_note.topic_id).get("system_design_controls", []) or profile.get("core_concepts", []))[:5],
+        "core_concepts_to_check": profile.get("core_concepts", [])[:5],
         "items": items,
-        "note": "Verification gives hints only. Readiness is not a star prediction. Better answers are deliberately hidden until final evaluation is locked.",
+        "note": "Verification gives hints only. Readiness is not a star prediction. Better answers are deliberately hidden until final evaluation is locked. Minor spelling should be cleaned before submission, but it should not substitute for stronger ML reasoning.",
     }

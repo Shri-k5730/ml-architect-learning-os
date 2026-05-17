@@ -214,20 +214,21 @@ If practice_result is present, use it as hard evidence for practical reasoning.
 Do not ignore failed tests or shallow interpretation.
 
 Evaluation rules:
-0. If expert_tutor_blueprint is present in the payload, treat it as the source of truth for the lesson. Score against its mechanism, nuances, system_design_controls, mission_answer_frame, and do_not_waste_words. Do not reward generic answers that only say leakage, generalization, drift, monitoring, or production failure unless the learner explains the topic-specific mechanism.
 1. Score on conceptual clarity, practical reasoning, architect reasoning, and communication.
-2. For tiny_hands_on, evaluate the reasoning and decision path, not just wording.
+2. For tiny_hands_on, evaluate the reasoning, calculations, and decision path, not just wording.
 3. For practice_result, practical_reasoning should normally be <= 2 if code tests fail, and <= 3 if code passes but interpretation is weak.
 4. For failure_diagnosis, check whether the learner identifies the actual failure mechanism and not just a vague symptom.
 5. For architect_decision, check whether the learner names a concrete design, evaluation, monitoring, or deployment action.
 6. Quote specific weaknesses from the learner's answer where useful.
 7. Do not reward polished generic answers if they miss the question-specific practical point.
 8. Penalize answers that confuse ordinary-language terms with ML-specific meaning, such as bias as preference instead of systematic error.
-9. Decide one action only: pass, borderline, revise, or fail_prereq.
-10. Borderline means the learner can progress but should improve the topic later.
-11. Rewrite only the parts of the note that need correction.
-12. Return strict JSON only.
-13. If the payload includes expert_tutor_blueprint, missions, expected_focus, verification, and coaching must align to that blueprint. The model may explain freely, but it must not invent expectations that were not taught.
+9. Minor spelling, grammar, capitalization, or typo errors must not reduce conceptual_clarity, practical_reasoning, or architect_reasoning if the intended technical meaning is recoverable. Penalize language noise only under communication, and only lightly unless it blocks understanding or sounds unprofessional.
+10. When a numeric/coding answer has correct final values but a wrong formula description, say exactly that. Do not mark the final values as wrong if they are correct. Separate formula error, arithmetic error, interpretation gap, and wording noise.
+11. Weak spots must be specific. Avoid generic feedback like "add a concrete metric or production control" when the exact issue is known. Prefer: "z-score formula was written incorrectly", "fit vs transform was not separated", or "false-negative cost was not named".
+12. Decide one action only: pass, borderline, revise, or fail_prereq.
+13. Borderline means the learner can progress but should improve the topic later.
+14. Rewrite only the parts of the note that need correction.
+15. Return strict JSON only.
 
 Output schema:
 {

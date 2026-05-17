@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from src.blueprints.advanced_ml import blueprint_to_booster
+from src.agents.mcq_quality import get_quality_mcqs
 
 
 # Study Booster is a deterministic, copy-safe learning layer.
@@ -455,15 +455,7 @@ def _mission_bridge_from_questions(booster: Dict[str, Any], questions: List[Dict
 
 
 def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Return copy-safe pre-mission support aligned to final missions.
-
-    Patch 022: for Advanced ML, use the Expert Tutor Blueprint as the source of truth.
-    The older ADVANCED_ML_BOOSTERS table remains as a fallback for backward compatibility.
-    """
-    blueprint_booster = blueprint_to_booster(topic_id)
-    if blueprint_booster:
-        return blueprint_booster
-
+    """Return copy-safe pre-mission support aligned to final missions."""
     title = concept_note.get("title", topic_id)
     base = dict(ADVANCED_ML_BOOSTERS.get(topic_id, {}))
 
@@ -497,5 +489,5 @@ def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_
         "answer_frame": base.get("answer_frame", []) or DEFAULT_ANSWER_FRAME,
         "mission_bridge": _mission_bridge_from_questions(base, questions),
         "mission_focus": mission_focus[:6],
-        "mcqs": base.get("mcqs", []) or _fallback_mcqs(str(title)),
+        "mcqs": get_quality_mcqs(topic_id, base.get("mcqs", []) or _fallback_mcqs(str(title))),
     }

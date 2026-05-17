@@ -20,6 +20,7 @@ from src.utils.cloud_state import repair_cloud_state_on_startup
 from src.utils.code_runner import run_code_exercise
 from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
+from src.agents.writing_assist import analyze_answer_text
 from src.agents.tutor_narrative import get_tutor_narrative
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
@@ -622,6 +623,50 @@ def render_answer_pressure(question_type: str, answer_text: str) -> None:
         st.caption(f"{words} words. Good length. Now make sure it has a concrete control.")
 
 
+
+
+def render_writing_assist_panel(question_type: str, answer_text: str) -> None:
+    """Low-risk writing assist: no rewrite, no answer generation, just noise signals."""
+    analysis = analyze_answer_text(answer_text, question_type)
+    if not answer_text:
+        return
+
+    status = analysis.get("length_status")
+    word_count = analysis.get("word_count", 0)
+    target_min = analysis.get("target_min", 80)
+    target_max = analysis.get("target_max", 140)
+
+    with st.expander("Writing assist . spelling, length, and precision", expanded=analysis.get("has_language_noise", False)):
+        if status == "good":
+            st.success(f"Length: {word_count} words. Target {target_min}-{target_max}. Good range.")
+        elif status in {"long", "essay"}:
+            st.warning(f"Length: {word_count} words. Target {target_min}-{target_max}. {analysis.get('length_hint')}")
+        else:
+            st.info(f"Length: {word_count} words. Target {target_min}-{target_max}. {analysis.get('length_hint')}")
+
+        suggestions = analysis.get("spelling_suggestions", []) or []
+        if suggestions:
+            st.markdown("**Possible spelling fixes**")
+            for item in suggestions:
+                st.markdown(f"- `{item.get('original')}` → `{item.get('suggestion')}`")
+        else:
+            st.caption("No common spelling hints detected.")
+
+        repeated = analysis.get("repeated_phrases", []) or []
+        if repeated:
+            st.markdown("**Repeated generic phrases**")
+            for phrase in repeated:
+                st.markdown(f"- `{phrase}` . Replace with the exact mechanism or control.")
+
+        hints = analysis.get("technical_precision_hints", []) or []
+        if hints:
+            st.markdown("**Technical wording hints**")
+            for hint in hints:
+                st.info(str(hint))
+
+        st.caption("This assist does not rewrite your answer or add concepts. It only flags language noise and precision risks before evaluation.")
+
+
 def load_relative_json_or_none(relative_path: Optional[str]) -> Optional[Dict[str, Any]]:
     if not relative_path:
         return None
@@ -1140,6 +1185,15 @@ def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
                 for gap in gaps:
                     st.markdown(f"- {gap}")
 
+            writing = item.get("writing_assist", {}) or {}
+            if writing.get("has_language_noise"):
+                st.markdown("**Writing assist**")
+                st.caption(writing.get("length_hint", ""))
+                for sug in writing.get("spelling_suggestions", [])[:5]:
+                    st.markdown(f"- `{sug.get('original')}` → `{sug.get('suggestion')}`")
+                for hint in writing.get("technical_precision_hints", [])[:3]:
+                    st.info(str(hint))
+
             st.markdown("**Next improvement**")
             st.info(item.get("next_improvement", ""))
 
@@ -1412,14 +1466,15 @@ def get_draft_verification_to_show(awaiting_run: Path, run_id: str) -> Optional[
 def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
     mcqs = booster.get("mcqs", []) or []
     st.markdown("### Pre-mission MCQs")
-    st.caption("Learning checks only. They do not affect score, XP, or unlocks.")
+    st.caption("Learning checks only. They do not affect score, XP, or unlocks. These should test judgment, not memory alone.")
     if not mcqs:
         st.info("No MCQs configured for this lesson yet.")
         return
 
     for idx, item in enumerate(mcqs, start=1):
         qkey = f"{topic_id}_mcq_{idx}"
-        with st.expander(f"Check {idx}. {item.get('question', '')}", expanded=(idx == 1)):
+        kind = str(item.get("kind", "Check"))
+        with st.expander(f"{kind} Check {idx}. {item.get('question', '')}", expanded=(idx == 1)):
             options = item.get("options", []) or []
             if not options:
                 st.info("No options configured.")
@@ -1432,12 +1487,17 @@ def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
                 label_visibility="collapsed",
             )
             correct_index = int(item.get("answer_index", -1))
+            option_explanations = item.get("option_explanations", []) or []
             if st.button(f"Check answer {idx}", key=f"{qkey}_btn", use_container_width=True):
                 if selected == correct_index:
                     st.success("Correct. " + str(item.get("explanation", "")))
                 else:
-                    st.error("Not quite. " + str(item.get("explanation", "")))
-                    st.caption("Hint: revise the Study Booster, then try again. The correct option is intentionally not shown here.")
+                    st.error("Not quite.")
+                    if selected < len(option_explanations) and option_explanations[selected]:
+                        st.warning(str(option_explanations[selected]))
+                    else:
+                        st.caption("This option misses the topic-specific mechanism. Re-read the tutor narrative and try again.")
+                    st.caption("The correct option is intentionally not shown. Fix the reasoning, not the guess.")
 
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
@@ -1837,6 +1897,7 @@ with tabs[1]:
                     label_visibility="collapsed",
                 )
                 render_answer_pressure(item.get("type", "mission"), answer_text)
+                render_writing_assist_panel(item.get("type", "mission"), answer_text)
                 updated_answers["answers"].append(
                     {
                         "question_id": item["question_id"],
