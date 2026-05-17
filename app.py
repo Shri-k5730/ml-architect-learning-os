@@ -1463,6 +1463,12 @@ def get_draft_verification_to_show(awaiting_run: Path, run_id: str) -> Optional[
     return None
 
 
+def _format_mcq_title(kind: str, idx: int, question: str) -> str:
+    kind = str(kind or "Check").strip()
+    prefix = f"Check {idx}" if kind.lower() == "check" else f"{kind} Check {idx}"
+    return f"{prefix}. {question}"
+
+
 def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
     mcqs = booster.get("mcqs", []) or []
     st.markdown("### Pre-mission MCQs")
@@ -1474,7 +1480,8 @@ def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
     for idx, item in enumerate(mcqs, start=1):
         qkey = f"{topic_id}_mcq_{idx}"
         kind = str(item.get("kind", "Check"))
-        with st.expander(f"{kind} Check {idx}. {item.get('question', '')}", expanded=(idx == 1)):
+        title = _format_mcq_title(kind, idx, str(item.get("question", "")))
+        with st.expander(title, expanded=(idx == 1)):
             options = item.get("options", []) or []
             if not options:
                 st.info("No options configured.")
@@ -1530,7 +1537,7 @@ def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], arc
             st.caption("These checks are for learning only. They do not affect score or unlocks.")
             for idx, item in enumerate(mcqs, start=1):
                 qkey = f"{topic_id}_mcq_{idx}"
-                st.markdown(f"**Check {idx}. {item.get('question', '')}**")
+                st.markdown(f"**{_format_mcq_title('Check', idx, str(item.get('question', '')))}**")
                 options = item.get("options", []) or []
                 if not options:
                     continue
