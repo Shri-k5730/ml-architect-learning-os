@@ -20,6 +20,7 @@ from src.utils.cloud_state import repair_cloud_state_on_startup
 from src.utils.code_runner import run_code_exercise
 from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
+from src.agents.expert_blueprints import get_topic_blueprint
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
 from src.utils.supabase_store import append_event, upsert_artifact
@@ -1241,6 +1242,46 @@ def render_learning_brief(concept_note: Dict[str, Any], architect_note: Dict[str
         render_static_card("Interview Framing", architect_note.get("interview_framing", ""))
 
 
+def render_expert_blueprint_lesson(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any]) -> None:
+    """Render Patch 020 expert tutor blueprint when available.
+
+    This deliberately teaches the topic-specific mechanism before production
+    controls. Existing active runs may still have older generated concept notes;
+    the blueprint overlay prevents the learner from being trapped by that stale
+    shallow content.
+    """
+    blueprint = get_topic_blueprint(topic_id)
+    if not blueprint:
+        render_learning_brief(concept_note, architect_note)
+        return
+
+    st.markdown("### Expert Tutor Lesson")
+    st.caption("This is the source-of-truth explanation for this topic. Learn the mechanism first, then the architect controls.")
+
+    render_static_card("What It Is", blueprint.get("definition", ""), "callout-good")
+    render_static_card("Why It Exists", blueprint.get("why_it_exists", ""))
+    render_static_card("Core Mechanism", blueprint.get("core_mechanism", ""), "callout-good")
+    render_static_card("Worked Example", blueprint.get("worked_example", ""))
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("Nuances", blueprint.get("nuances", []))
+    with c2:
+        render_static_card("Common Confusions", blueprint.get("common_confusions", []), "callout-risk")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_static_card("When This Matters", blueprint.get("when_it_matters", ""))
+    with c2:
+        render_static_card("When This Matters Less", blueprint.get("when_it_matters_less", ""))
+
+    st.markdown("### Architect View")
+    render_static_card("Architect Implications", blueprint.get("architect_implications", []), "callout-good")
+    render_static_card("System Design Controls", blueprint.get("system_controls", []))
+    render_static_card("Mission Answer Frame", blueprint.get("mission_answer_frame", []))
+
+
+
 def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
     st.markdown("### Study Booster")
     st.caption("This bridges the gap between the concept note and mission-quality answers. It is not an answer bank.")
@@ -1738,7 +1779,7 @@ with tabs[1]:
         lesson_tabs = st.tabs(current_tabs)
 
         with lesson_tabs[0]:
-            render_learning_brief(concept_note, architect_note)
+            render_expert_blueprint_lesson(topic_id, concept_note, architect_note)
 
         with lesson_tabs[1]:
             render_booster_walkthrough(booster)

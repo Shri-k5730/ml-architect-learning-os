@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, List
 
 from src.agents.topic_coaching_profiles import get_topic_coaching_profile
+from src.agents.expert_blueprints import get_topic_blueprint
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 
 
@@ -156,6 +157,7 @@ def verify_draft_answers(
     by_question = {item.get("question_id"): item for item in answers_doc.get("answers", [])}
     items: List[Dict[str, Any]] = []
     profile = get_topic_coaching_profile(concept_note.topic_id)
+    blueprint = get_topic_blueprint(concept_note.topic_id) or {}
 
     for question in assessment.questions:
         answer = str(by_question.get(question.question_id, {}).get("answer", "")).strip()
@@ -207,7 +209,15 @@ def verify_draft_answers(
                 else "Evaluable. This still does not guarantee 4 stars; final evaluation checks consistency across all answers."
             ),
         },
-        "core_concepts_to_check": profile.get("core_concepts", [])[:5],
+        "core_concepts_to_check": (
+            [
+                str(blueprint.get("definition", "")),
+                str(blueprint.get("core_mechanism", "")),
+                *[str(item) for item in blueprint.get("system_controls", [])[:3]],
+            ]
+            if blueprint
+            else profile.get("core_concepts", [])[:5]
+        ),
         "items": items,
         "note": "Verification gives hints only. Readiness is not a star prediction. Better answers are deliberately hidden until final evaluation is locked.",
     }

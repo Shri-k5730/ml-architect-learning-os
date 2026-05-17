@@ -15,6 +15,7 @@ from src.schemas import (
     UserAnswer,
 )
 from src.utils.validator import ValidationError, build_dataclass
+from src.agents.expert_blueprints import get_topic_blueprint
 
 
 class EvaluatorRefinerAgentError(Exception):
@@ -43,6 +44,9 @@ def build_evaluator_refiner_payload(
         "learning_goal": learner_profile.get("learning_goal", ""),
         "priority_contexts": learner_profile.get("priority_contexts", []),
     }
+    blueprint = get_topic_blueprint(concept_note.topic_id)
+    if blueprint is not None:
+        payload["expert_tutor_blueprint"] = blueprint
     if practice_exercise is not None:
         payload["practice_exercise"] = practice_exercise
     if practice_submission is not None:

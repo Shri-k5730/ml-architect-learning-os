@@ -7,6 +7,7 @@ from src.agents.topic_coaching_profiles import (
     get_topic_coaching_profile,
     profile_golden_answer,
 )
+from src.agents.expert_blueprints import get_topic_blueprint
 from src.schemas import (
     ArchitectNote,
     Assessment,
@@ -157,11 +158,41 @@ def _fallback_better_answer(
     architect_note: ArchitectNote,
 ) -> str:
     focus_sentence = "; ".join(expected_focus[:3]) if expected_focus else "the concept, practical behavior, and production implication"
+    blueprint = get_topic_blueprint(concept_note.topic_id) or {}
+    if blueprint:
+        mechanism = str(blueprint.get("core_mechanism", ""))
+        controls = ", ".join(str(item) for item in blueprint.get("system_controls", [])[:3])
+        frame = " ".join(str(item) for item in blueprint.get("mission_answer_frame", [])[:3])
+        if question_type == "concept_check":
+            return (
+                f"A stronger answer should define {concept_note.title}, then explain the specific mechanism: {mechanism} "
+                f"Do not stop at generic production risk. Cover: {focus_sentence}."
+            )
+        if question_type == "tiny_hands_on":
+            return (
+                f"A stronger answer should use the scenario or calculation, then connect it to this mechanism: {mechanism} "
+                f"Use the answer frame: {frame}"
+            )
+        if question_type == "failure_diagnosis":
+            return (
+                f"A stronger answer should separate symptom, mechanism, evidence, and prevention. "
+                f"For this topic the mechanism is: {mechanism}"
+            )
+        if question_type == "architect_decision":
+            return (
+                f"A stronger answer should turn the mechanism into controls. Relevant controls include: {controls}. "
+                f"Cover: {focus_sentence}."
+            )
+        if question_type == "teachback":
+            return (
+                f"A stronger answer should explain the concept simply, use one concrete business example, "
+                f"and name one control such as: {controls}."
+            )
 
     if question_type == "concept_check":
         return (
             f"A stronger answer should define {concept_note.title} directly, state why the wrong interpretation fails, "
-            f"and connect the concept to model behavior on unseen data. Cover: {focus_sentence}."
+            f"and connect the concept to model behavior. Cover: {focus_sentence}."
         )
 
     if question_type == "tiny_hands_on":

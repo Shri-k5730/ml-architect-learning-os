@@ -41,6 +41,12 @@ from src.checkpoints.checkpoint_bank import (
     build_checkpoint_concept_note,
     is_checkpoint_topic,
 )
+from src.agents.expert_blueprints import (
+    build_architect_note_from_blueprint,
+    build_assessment_from_blueprint,
+    build_concept_note_from_blueprint,
+    has_topic_blueprint,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -609,6 +615,31 @@ def main() -> None:
 
         assessment = build_checkpoint_assessment(topic)
         write_log(run_id, "Checkpoint assessment generated from deterministic checkpoint bank")
+    elif has_topic_blueprint(topic.topic_id):
+        concept_note = build_concept_note_from_blueprint(topic)
+        teacher_diagnostics = {
+            "status": "expert_blueprint_content",
+            "blueprint_version": "expert_tutor_blueprint_v1_2026_05",
+            "message": "Advanced ML lesson generated from deterministic expert tutor blueprint.",
+        }
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_log(run_id, "Concept note generated from expert tutor blueprint")
+
+        architect_note = build_architect_note_from_blueprint(topic)
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Architect note generated from expert tutor blueprint")
+
+        assessment = build_assessment_from_blueprint(topic)
+        write_log(run_id, "Assessment generated from expert tutor blueprint")
     else:
         teacher_llm_callable = build_llm_callable("teacher")
         architect_llm_callable = build_llm_callable("architect_lens")

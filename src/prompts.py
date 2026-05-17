@@ -225,7 +225,10 @@ Evaluation rules:
 9. Decide one action only: pass, borderline, revise, or fail_prereq.
 10. Borderline means the learner can progress but should improve the topic later.
 11. Rewrite only the parts of the note that need correction.
-12. Return strict JSON only.
+12. If expert_tutor_blueprint is present, evaluate against its topic-specific mechanism, system controls, and mission expectations.
+13. Do not penalize the learner for not using generic leakage/generalization language if the topic-specific mechanism is correct.
+14. Do not reward generic production-risk wording unless it is tied to the actual mechanism in the blueprint.
+15. Return strict JSON only.
 
 Output schema:
 {
