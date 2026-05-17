@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REWARDS_STATE_PATH = PROJECT_ROOT / "data" / "rewards_state.json"
+REWARDS_POLICY_VERSION = "v2_best_completed_attempt_2026_05"
 
 CLEAR_DECISIONS = {"pass", "borderline"}
 LOW_VALUE_BADGE_PREFIXES = (
@@ -30,6 +31,7 @@ def _default_state() -> Dict[str, Any]:
         },
         "topics": {},
         "history": [],
+        "policy_version": REWARDS_POLICY_VERSION,
         "xp_policy": "best_completed_attempt_per_topic",
         "badge_policy": "capability_badges_only",
     }
@@ -306,6 +308,7 @@ def normalize_rewards_state(state: Dict[str, Any]) -> Dict[str, Any]:
     state.setdefault("topics", {})
     state.setdefault("history", [])
     state.setdefault("badges_unlocked", [])
+    state["policy_version"] = REWARDS_POLICY_VERSION
     state["xp_policy"] = "best_completed_attempt_per_topic"
     state["badge_policy"] = "capability_badges_only"
 
@@ -350,6 +353,7 @@ def normalize_rewards_state(state: Dict[str, Any]) -> Dict[str, Any]:
         row["total_xp"] = running_total_xp
         row["stars_earned"] = stars
         row["best_stars"] = max(best_stars_by_topic.get(topic_id, 0), stars if clear else 0)
+        row["policy_version"] = REWARDS_POLICY_VERSION
         row["xp_policy"] = "best_completed_attempt_per_topic"
         row["score_signature"] = _compact_score_signature(row)
 
@@ -532,6 +536,7 @@ def apply_evaluation_rewards(
         "xp_earned": xp_earned,
         "base_xp_for_attempt": base_xp,
         "best_completed_xp": topic_state.get("best_completed_xp", 0),
+        "policy_version": REWARDS_POLICY_VERSION,
         "xp_policy": "best_completed_attempt_per_topic",
         "total_xp": state["total_xp"],
         "stars_earned": stars,

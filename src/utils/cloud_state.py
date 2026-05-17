@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.curriculum_catalog import load_topic_catalog_dicts, seed_supabase_catalog_from_local_if_empty
-from src.utils.rewards import compute_stars_from_scores, normalize_rewards_state
+from src.utils.rewards import REWARDS_POLICY_VERSION, compute_stars_from_scores, normalize_rewards_state
 from src.utils.supabase_store import get_supabase_client, supabase_enabled, upsert_learner_progress_rows, upsert_state
 
 
@@ -328,6 +328,7 @@ def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tupl
             },
             "topics": {},
             "history": history,
+            "policy_version": REWARDS_POLICY_VERSION,
             "xp_policy": "best_completed_attempt_per_topic",
             "badge_policy": "capability_badges_only",
         }
@@ -363,6 +364,7 @@ def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tupl
         )
 
     state = {
+        "policy_version": REWARDS_POLICY_VERSION,
         "total_xp": 0,
         "badges_unlocked": [],
         "streaks": {
@@ -406,9 +408,12 @@ def repair_cloud_state_on_startup(force: bool = True) -> Dict[str, Any]:
             summary["evaluation_artifacts_used"] = eval_count
 
         rewards_state, reward_count = _rebuild_rewards_from_artifacts(progress_rows)
+        rewards_state["policy_version"] = REWARDS_POLICY_VERSION
+        rewards_state["updated_at"] = utc_now_iso()
+        rewards_state["source"] = "rebuilt_from_evaluation_artifacts_v2_rewards_policy"
         _write_rewards_state(rewards_state)
         if reward_count > 0 or rewards_state.get("total_xp", 0) > 0:
-            upsert_state("rewards_state", {**rewards_state, "updated_at": utc_now_iso(), "source": "rebuilt_from_evaluation_artifacts_v2_rewards_policy"})
+            upsert_state("rewards_state", rewards_state)
         summary["rewards_rebuilt"] = True
         summary["reward_artifacts_used"] = reward_count
 
