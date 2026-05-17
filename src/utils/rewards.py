@@ -82,10 +82,46 @@ def _badge_dict(badge: Any) -> Optional[Dict[str, str]]:
 
 
 def _is_low_value_badge(badge_id: str) -> bool:
-    badge_id = str(badge_id or "").strip().lower()
-    if badge_id in LOW_VALUE_BADGE_IDS:
+    """Return True for old attendance-style badges that should not remain in the cabinet.
+
+    Older reward payloads stored badge labels as free text, for example:
+    - "Level Clear: mlf_013 . Completed Encoding categorical variables safely."
+    - "Three-Star Scholar"
+    - "Clear Streak x3"
+
+    Earlier filtering only caught normalized ids such as ``level_clear_mlf_013``.
+    It missed the free-text labels because of punctuation. This broader filter
+    keeps the cabinet focused on capability badges rather than attendance spam.
+    """
+    raw = str(badge_id or "").strip()
+    text = raw.lower()
+    normalized = (
+        text.replace(":", " ")
+        .replace(".", " ")
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+
+    if normalized in LOW_VALUE_BADGE_IDS or text in LOW_VALUE_BADGE_IDS:
         return True
-    return any(badge_id.startswith(prefix) for prefix in LOW_VALUE_BADGE_PREFIXES)
+
+    low_value_text_prefixes = (
+        "level clear",
+        "level_clear",
+        "first clear",
+        "first_clear",
+        "three-star scholar",
+        "three star scholar",
+        "three_star_scholar",
+        "four-star architect",
+        "five-star master",
+        "clear streak",
+        "clear_streak",
+    )
+    if any(text.startswith(prefix) or normalized.startswith(prefix.replace(" ", "_")) for prefix in low_value_text_prefixes):
+        return True
+
+    return any(normalized.startswith(prefix) for prefix in LOW_VALUE_BADGE_PREFIXES)
 
 
 def _award_badge(

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils.curriculum_catalog import load_topic_catalog_dicts, seed_supabase_catalog_from_local_if_empty
-from src.utils.rewards import normalize_rewards_state
+from src.utils.rewards import compute_stars_from_scores, normalize_rewards_state
 from src.utils.supabase_store import get_supabase_client, supabase_enabled, upsert_learner_progress_rows, upsert_state
 
 
@@ -258,24 +258,69 @@ def _enforce_v1_linear_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
 
 
 def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tuple[Dict[str, Any], int]:
+    """Rebuild rewards from evaluation artifacts, not old reward artifacts.
+
+    Old reward artifacts were generated under the V1 policy:
+    - revise attempts could still add XP
+    - every level clear produced low-value badge spam
+    - retry attempts accumulated XP instead of contributing only improvement delta
+
+    V2 rewards must be derived from the canonical evidence: evaluation scores and
+    decisions. Reward artifacts are used only as metadata fallback for topic title.
+    """
+    evaluation_artifacts = _fetch_artifacts_by_type("evaluation")
     reward_artifacts = _fetch_artifacts_by_type("rewards")
+
+    reward_by_run: Dict[str, Dict[str, Any]] = {}
+    for artifact in reward_artifacts:
+        run_id = str(artifact.get("run_id") or "").strip()
+        payload = artifact.get("payload") or {}
+        if run_id and isinstance(payload, dict):
+            reward_by_run[run_id] = payload
+
+    title_by_topic = {row.get("topic_id", ""): row.get("title", row.get("topic_id", "")) for row in progress_rows}
     history: List[Dict[str, Any]] = []
 
-    for artifact in reward_artifacts:
+    for artifact in evaluation_artifacts:
+        run_id = str(artifact.get("run_id") or "").strip()
+        topic_id = str(artifact.get("topic_id") or "").strip()
         payload = artifact.get("payload") or {}
-        if not isinstance(payload, dict):
+        if not run_id or not topic_id or not isinstance(payload, dict):
             continue
-        payload = dict(payload)
-        payload.setdefault("run_id", artifact.get("run_id"))
-        payload.setdefault("topic_id", artifact.get("topic_id"))
-        payload.setdefault("created_at", artifact.get("created_at"))
-        payload.setdefault("status", "completed" if payload.get("completed") else payload.get("decision"))
-        history.append(payload)
+
+        scores = payload.get("scores") if isinstance(payload.get("scores"), dict) else {}
+        decision = str(payload.get("decision") or "").strip().lower()
+        completed = decision in CLEAR_DECISIONS
+        reward_meta = reward_by_run.get(run_id, {})
+        topic_title = (
+            reward_meta.get("topic_title")
+            or payload.get("topic_title")
+            or title_by_topic.get(topic_id)
+            or topic_id
+        )
+
+        history.append(
+            {
+                "run_id": run_id,
+                "topic_id": topic_id,
+                "topic_title": topic_title,
+                "decision": decision,
+                "status": "completed" if completed else decision,
+                "completed": completed,
+                "scores": scores,
+                "stars_earned": compute_stars_from_scores(scores) if scores else 0,
+                "best_stars": compute_stars_from_scores(scores) if scores else 0,
+                "xp_earned": 0,
+                "total_xp": 0,
+                "badges_awarded": [],
+                "created_at": artifact.get("created_at"),
+                "source": "rebuilt_from_evaluation_artifacts",
+            }
+        )
 
     if history:
-        latest_total = max(_as_int(row.get("total_xp"), 0) for row in history)
         state = {
-            "total_xp": latest_total,
+            "total_xp": 0,
             "badges_unlocked": [],
             "streaks": {
                 "current_completion_streak": 0,
@@ -283,12 +328,13 @@ def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tupl
             },
             "topics": {},
             "history": history,
+            "xp_policy": "best_completed_attempt_per_topic",
+            "badge_policy": "capability_badges_only",
         }
         return normalize_rewards_state(state), len(history)
 
-    # Fallback if reward artifacts are absent: rebuild minimal rewards from progress.
+    # Fallback if evaluation artifacts are absent: rebuild minimal rewards from progress.
     minimal_history: List[Dict[str, Any]] = []
-    running_xp = 0
     for row in progress_rows:
         if row.get("status") != "completed":
             continue
@@ -298,10 +344,7 @@ def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tupl
             "architect_reasoning": _as_int(row.get("last_score_architect"), 1),
             "communication": _as_int(row.get("last_score_communication"), 1),
         }
-        avg = sum(scores.values()) / 4
-        stars = max(1, min(5, round(avg)))
-        xp = 25 + stars * 5
-        running_xp += xp
+        stars = compute_stars_from_scores(scores)
         minimal_history.append(
             {
                 "run_id": f"rebuilt_{row['topic_id']}",
@@ -310,8 +353,9 @@ def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tupl
                 "decision": row.get("last_decision") or "borderline",
                 "status": "completed",
                 "completed": True,
-                "xp_earned": xp,
-                "total_xp": running_xp,
+                "scores": scores,
+                "xp_earned": 0,
+                "total_xp": 0,
                 "stars_earned": stars,
                 "best_stars": stars,
                 "badges_awarded": [],
@@ -319,7 +363,7 @@ def _rebuild_rewards_from_artifacts(progress_rows: List[Dict[str, str]]) -> Tupl
         )
 
     state = {
-        "total_xp": running_xp,
+        "total_xp": 0,
         "badges_unlocked": [],
         "streaks": {
             "current_completion_streak": 0,
@@ -364,7 +408,7 @@ def repair_cloud_state_on_startup(force: bool = True) -> Dict[str, Any]:
         rewards_state, reward_count = _rebuild_rewards_from_artifacts(progress_rows)
         _write_rewards_state(rewards_state)
         if reward_count > 0 or rewards_state.get("total_xp", 0) > 0:
-            upsert_state("rewards_state", {**rewards_state, "updated_at": utc_now_iso(), "source": "rebuilt_from_reward_artifacts"})
+            upsert_state("rewards_state", {**rewards_state, "updated_at": utc_now_iso(), "source": "rebuilt_from_evaluation_artifacts_v2_rewards_policy"})
         summary["rewards_rebuilt"] = True
         summary["reward_artifacts_used"] = reward_count
 
