@@ -1265,15 +1265,38 @@ def render_tutor_narrative_panel(topic_id: str) -> bool:
     mission_prep = narrative.get("mission_prep", []) or []
     if mission_prep:
         st.markdown("### Mission-by-Mission Prep")
-        st.caption("This is the bridge between what was taught and what you are about to answer. Use it to plan, not to copy.")
+        st.caption("This is the bridge between what was taught and what you are about to answer. It is visible by default because hidden prep is useless.")
         for item in mission_prep:
-            with st.expander(str(item.get("title", "Mission")), expanded=False):
-                st.markdown("**Question**")
-                st.write(item.get("question", ""))
+            with st.container(border=True):
+                st.markdown(f"#### {item.get('title', 'Mission')}")
+                question = item.get("question", "")
+                if question:
+                    st.markdown("**Question**")
+                    st.write(question)
+
+                tested_skill = item.get("tested_skill") or item.get("what_it_tests") or "Apply the topic mechanism to the mission scenario."
                 st.markdown("**What this is really testing**")
-                st.info(item.get("what_it_tests", ""))
-                st.markdown("**How to answer without overexplaining**")
-                st.success(item.get("how_to_answer", ""))
+                st.info(tested_skill)
+
+                must_include = item.get("must_include", []) or []
+                if must_include:
+                    st.markdown("**Strong answer must include**")
+                    for point in must_include:
+                        st.markdown(f"- {point}")
+
+                answer_shape = item.get("answer_shape", "")
+                if answer_shape:
+                    st.markdown("**Answer shape**")
+                    st.success(answer_shape)
+
+                avoid = item.get("avoid", "")
+                if avoid:
+                    st.markdown("**Do not waste words on**")
+                    st.warning(avoid)
+
+                how_to_answer = item.get("how_to_answer", "")
+                if how_to_answer:
+                    st.caption(how_to_answer)
     return True
 
 
