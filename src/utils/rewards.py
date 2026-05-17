@@ -9,6 +9,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REWARDS_STATE_PATH = PROJECT_ROOT / "data" / "rewards_state.json"
 
 CLEAR_DECISIONS = {"pass", "borderline"}
+LOW_VALUE_BADGE_PREFIXES = (
+    "level_clear_",
+)
+LOW_VALUE_BADGE_IDS = {
+    "first_clear",
+    "three_star_scholar",
+    "four_star_architect",
+    "five_star_master",
+}
 
 
 def _default_state() -> Dict[str, Any]:
@@ -21,6 +30,8 @@ def _default_state() -> Dict[str, Any]:
         },
         "topics": {},
         "history": [],
+        "xp_policy": "best_completed_attempt_per_topic",
+        "badge_policy": "capability_badges_only",
     }
 
 
@@ -31,6 +42,19 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
 
 
 def _is_clear(decision: str, completed: Optional[bool] = None, status: Optional[str] = None) -> bool:
@@ -57,6 +81,13 @@ def _badge_dict(badge: Any) -> Optional[Dict[str, str]]:
     return None
 
 
+def _is_low_value_badge(badge_id: str) -> bool:
+    badge_id = str(badge_id or "").strip().lower()
+    if badge_id in LOW_VALUE_BADGE_IDS:
+        return True
+    return any(badge_id.startswith(prefix) for prefix in LOW_VALUE_BADGE_PREFIXES)
+
+
 def _award_badge(
     state: Dict[str, Any],
     badge_id: str,
@@ -69,13 +100,13 @@ def _award_badge(
 
     for existing in state.get("badges_unlocked", []):
         cleaned = _badge_dict(existing)
-        if cleaned and cleaned["id"] not in seen_ids:
+        if cleaned and not _is_low_value_badge(cleaned["id"]) and cleaned["id"] not in seen_ids:
             cleaned_badges.append(cleaned)
             seen_ids.add(cleaned["id"])
 
     state["badges_unlocked"] = cleaned_badges
 
-    if badge_id in seen_ids:
+    if _is_low_value_badge(badge_id) or badge_id in seen_ids:
         return
 
     badge = {"id": badge_id, "label": label, "description": description}
@@ -90,6 +121,9 @@ def compute_average_from_scores(scores: Dict[str, int]) -> float:
         _as_int(scores.get("architect_reasoning"), 1),
         _as_int(scores.get("communication"), 1),
     ]
+    coding = scores.get("coding_correctness") or scores.get("coding") or scores.get("code_lab")
+    if coding not in (None, ""):
+        values.append(_as_int(coding, 1))
     return sum(values) / len(values)
 
 
@@ -98,11 +132,132 @@ def compute_stars_from_scores(scores: Dict[str, int]) -> int:
     return max(1, min(5, round(avg)))
 
 
-def normalize_rewards_state(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Clean old reward rows and recompute streaks from existing history.
+def _base_xp_for_clear(decision: str, stars: int) -> int:
+    decision_norm = str(decision or "").strip().lower()
+    if decision_norm == "pass":
+        return 60 + stars * 10
+    if decision_norm == "borderline":
+        return 25 + stars * 5
+    return 0
 
-    This fixes earlier V1 rows where borderline clears were stored with streak 0,
-    and it prevents Streamlit from rendering badge objects as [object Object].
+
+def _compact_score_signature(row: Dict[str, Any]) -> str:
+    scores = row.get("scores") if isinstance(row.get("scores"), dict) else {}
+    if not scores:
+        return ""
+    ordered = [
+        f"concept={scores.get('conceptual_clarity', '-')}",
+        f"practical={scores.get('practical_reasoning', '-')}",
+        f"architect={scores.get('architect_reasoning', '-')}",
+        f"communication={scores.get('communication', '-')}",
+    ]
+    coding = scores.get("coding_correctness") or scores.get("coding") or scores.get("code_lab")
+    if coding not in (None, ""):
+        ordered.append(f"coding={coding}")
+    return ", ".join(ordered)
+
+
+def _award_capability_badges(
+    *,
+    state: Dict[str, Any],
+    topic_id: str,
+    decision: str,
+    clear: bool,
+    scores: Dict[str, Any],
+    stars: int,
+    previous_topic_state: Dict[str, Any],
+    awarded: List[Dict[str, str]],
+) -> None:
+    if not clear:
+        return
+
+    practical = _as_int(scores.get("practical_reasoning"), 0)
+    architect = _as_int(scores.get("architect_reasoning"), 0)
+    conceptual = _as_int(scores.get("conceptual_clarity"), 0)
+    communication = _as_int(scores.get("communication"), 0)
+    coding = _as_int(scores.get("coding_correctness") or scores.get("coding") or scores.get("code_lab"), 0)
+
+    if str(topic_id).startswith("checkpoint_"):
+        _award_badge(
+            state,
+            "module_checkpoint_clear",
+            "Checkpoint Cleared",
+            "Cleared a module checkpoint and unlocked the next block.",
+            awarded,
+        )
+
+    if previous_topic_state.get("last_decision") not in (None, "", "pass", "borderline"):
+        _award_badge(
+            state,
+            "recovery_clear",
+            "Recovered After Revise",
+            "Improved a revised attempt into a clear.",
+            awarded,
+        )
+
+    if practical >= 3:
+        _award_badge(
+            state,
+            "practical_reasoning_clear",
+            "Practical Reasoning Clear",
+            "Reached acceptable practical reasoning on a lesson.",
+            awarded,
+        )
+
+    if architect >= 3:
+        _award_badge(
+            state,
+            "production_controls_named",
+            "Production Controls Named",
+            "Named deployable controls such as validation, monitoring, thresholds, fallback, or retraining triggers.",
+            awarded,
+        )
+
+    if conceptual >= 3 and practical >= 3 and architect >= 3 and communication >= 3:
+        _award_badge(
+            state,
+            "balanced_ml_answer",
+            "Balanced ML Answer",
+            "Reached the minimum bar across concept, practical reasoning, architecture, and communication.",
+            awarded,
+        )
+
+    if stars >= 4:
+        _award_badge(
+            state,
+            "four_star_attempt",
+            "Four-Star Attempt",
+            "Produced a strong answer set with 4 or more stars.",
+            awarded,
+        )
+
+    if coding >= 3:
+        _award_badge(
+            state,
+            "code_lab_clear",
+            "Code Lab Clear",
+            "Cleared a practical coding exercise.",
+            awarded,
+        )
+
+    if _as_int(state["streaks"].get("current_completion_streak"), 0) >= 3:
+        _award_badge(
+            state,
+            "no_flunk_streak_3",
+            "No-Flunk Streak x3",
+            "Cleared 3 attempts in a row without a revise/fail reset.",
+            awarded,
+        )
+
+
+def normalize_rewards_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize rewards using best-completed-attempt XP.
+
+    Policy:
+    - Revise/fail attempts earn 0 XP and reset the streak.
+    - A topic contributes XP only from its best completed attempt.
+    - A retry adds only the positive delta if it beats the previous best completed attempt.
+    - Low-value badge spam such as per-level clear badges is filtered from the global cabinet.
     """
     if not isinstance(state, dict):
         state = _default_state()
@@ -115,72 +270,75 @@ def normalize_rewards_state(state: Dict[str, Any]) -> Dict[str, Any]:
     state.setdefault("topics", {})
     state.setdefault("history", [])
     state.setdefault("badges_unlocked", [])
+    state["xp_policy"] = "best_completed_attempt_per_topic"
+    state["badge_policy"] = "capability_badges_only"
 
-    # Clean global badges.
-    cleaned_global: List[Dict[str, str]] = []
-    seen_badges = set()
-    for badge in state.get("badges_unlocked", []):
-        cleaned = _badge_dict(badge)
-        if cleaned and cleaned["id"] not in seen_badges:
-            cleaned_global.append(cleaned)
-            seen_badges.add(cleaned["id"])
-    state["badges_unlocked"] = cleaned_global
+    state["badges_unlocked"] = []
+    state["topics"] = {}
 
-    # Clean history rows and recompute streaks.
     current_streak = 0
     best_streak = 0
-    completed_topics = set()
-    total_xp_from_history = 0
+    running_total_xp = 0
+    best_base_xp_by_topic: Dict[str, int] = {}
+    best_stars_by_topic: Dict[str, int] = {}
 
-    for row in state.get("history", []):
-        if not isinstance(row, dict):
+    cleaned_history: List[Dict[str, Any]] = []
+
+    for raw_row in state.get("history", []):
+        if not isinstance(raw_row, dict):
             continue
+        row = dict(raw_row)
 
         decision = str(row.get("decision") or "").strip().lower()
         status = str(row.get("status") or "").strip().lower()
         topic_id = str(row.get("topic_id") or "").strip()
         topic_title = str(row.get("topic_title") or topic_id).strip()
+        completed_flag = _as_bool(row.get("completed"))
+        clear = _is_clear(decision=decision, completed=completed_flag, status=status)
         stars = _as_int(row.get("stars_earned"), _as_int(row.get("best_stars"), 0))
-        xp = _as_int(row.get("xp_earned"), 0)
-        total_xp_from_history += xp
+        base_xp = _base_xp_for_clear(decision, stars) if clear else 0
 
-        clear = _is_clear(decision=decision, status=status)
+        previous_best_xp = best_base_xp_by_topic.get(topic_id, 0)
+        xp_earned = max(0, base_xp - previous_best_xp) if topic_id else 0
+        if clear and topic_id and base_xp > previous_best_xp:
+            best_base_xp_by_topic[topic_id] = base_xp
+            best_stars_by_topic[topic_id] = stars
+
+        if not clear:
+            xp_earned = 0
+
+        running_total_xp += xp_earned
         row["completed"] = clear
+        row["raw_xp_earned"] = _as_int(row.get("xp_earned"), 0)
+        row["xp_earned"] = xp_earned
+        row["total_xp"] = running_total_xp
+        row["stars_earned"] = stars
+        row["best_stars"] = max(best_stars_by_topic.get(topic_id, 0), stars if clear else 0)
+        row["xp_policy"] = "best_completed_attempt_per_topic"
+        row["score_signature"] = _compact_score_signature(row)
 
-        raw_badges = row.get("badges_awarded", []) or []
-        if isinstance(raw_badges, dict):
-            raw_badges = [raw_badges]
-        cleaned_row_badges: List[Dict[str, str]] = []
-        for badge in raw_badges:
-            cleaned = _badge_dict(badge)
-            if cleaned:
-                cleaned_row_badges.append(cleaned)
-        row["badges_awarded"] = cleaned_row_badges
-        row["badge_labels"] = ", ".join(b["label"] for b in cleaned_row_badges)
-
-        if topic_id:
-            topic_state = state["topics"].setdefault(
-                topic_id,
-                {
-                    "title": topic_title,
-                    "attempts": 0,
-                    "completed": False,
-                    "latest_stars": 0,
-                    "best_stars": 0,
-                    "last_decision": None,
-                    "last_badges": [],
-                },
-            )
-            topic_state["title"] = topic_title
-            topic_state["attempts"] = max(_as_int(topic_state.get("attempts"), 0), 1)
-            topic_state["latest_stars"] = stars or _as_int(topic_state.get("latest_stars"), 0)
+        topic_state = state["topics"].setdefault(
+            topic_id,
+            {
+                "title": topic_title,
+                "attempts": 0,
+                "completed": False,
+                "latest_stars": 0,
+                "best_stars": 0,
+                "last_decision": None,
+                "last_badges": [],
+                "best_completed_xp": 0,
+            },
+        )
+        previous_topic_state = dict(topic_state)
+        topic_state["title"] = topic_title
+        topic_state["attempts"] = _as_int(topic_state.get("attempts"), 0) + 1
+        topic_state["latest_stars"] = stars
+        topic_state["last_decision"] = decision
+        if clear:
+            topic_state["completed"] = True
             topic_state["best_stars"] = max(_as_int(topic_state.get("best_stars"), 0), stars)
-            topic_state["last_decision"] = decision
-            if clear:
-                topic_state["completed"] = True
-                completed_topics.add(topic_id)
-            if cleaned_row_badges:
-                topic_state["last_badges"] = [b["label"] for b in cleaned_row_badges]
+            topic_state["best_completed_xp"] = max(_as_int(topic_state.get("best_completed_xp"), 0), base_xp)
 
         if clear:
             current_streak += 1
@@ -188,35 +346,36 @@ def normalize_rewards_state(state: Dict[str, Any]) -> Dict[str, Any]:
         else:
             current_streak = 0
 
+        state["streaks"]["current_completion_streak"] = current_streak
+        state["streaks"]["best_completion_streak"] = max(
+            _as_int(state["streaks"].get("best_completion_streak"), 0),
+            best_streak,
+        )
+
+        row_badges: List[Dict[str, str]] = []
+        scores = row.get("scores") if isinstance(row.get("scores"), dict) else {}
+        if clear:
+            _award_capability_badges(
+                state=state,
+                topic_id=topic_id,
+                decision=decision,
+                clear=clear,
+                scores=scores,
+                stars=stars,
+                previous_topic_state=previous_topic_state,
+                awarded=row_badges,
+            )
+        row["badges_awarded"] = row_badges
+        row["badge_labels"] = ", ".join(b["label"] for b in row_badges)
+        if row_badges:
+            topic_state["last_badges"] = [b["label"] for b in row_badges]
+
+        cleaned_history.append(row)
+
+    state["history"] = cleaned_history
+    state["total_xp"] = running_total_xp
     state["streaks"]["current_completion_streak"] = current_streak
-    state["streaks"]["best_completion_streak"] = max(
-        _as_int(state["streaks"].get("best_completion_streak"), 0),
-        best_streak,
-    )
-
-    # Preserve existing total if it is higher, otherwise rebuild from history.
-    state["total_xp"] = max(_as_int(state.get("total_xp"), 0), total_xp_from_history)
-
-    # Backfill durable per-level badges for completed topics.
-    awarded_dummy: List[Dict[str, str]] = []
-    for topic_id in sorted(completed_topics):
-        topic_title = state["topics"].get(topic_id, {}).get("title", topic_id)
-        _award_badge(
-            state,
-            f"level_clear_{topic_id}",
-            f"Level Clear: {topic_id}",
-            f"Completed {topic_title}.",
-            awarded_dummy,
-        )
-
-    if completed_topics:
-        _award_badge(
-            state,
-            "first_clear",
-            "First Clear",
-            "Completed the first level.",
-            awarded_dummy,
-        )
+    state["streaks"]["best_completion_streak"] = best_streak
 
     return state
 
@@ -231,7 +390,6 @@ def load_rewards_state() -> Dict[str, Any]:
         if not isinstance(data, dict):
             return _default_state()
         state = normalize_rewards_state(data)
-        # Persist cleanup locally so repeated app reloads stay clean.
         save_rewards_state(state)
         return state
     except Exception:
@@ -246,8 +404,6 @@ def save_rewards_state(state: Dict[str, Any]) -> None:
         encoding="utf-8",
     )
 
-    # Never overwrite durable cloud rewards with an empty baseline after Streamlit sleep.
-    # Only persist when the state contains real reward history or XP.
     try:
         if normalized.get("history") or _as_int(normalized.get("total_xp"), 0) > 0:
             from src.utils.supabase_store import upsert_state
@@ -285,30 +441,29 @@ def apply_evaluation_rewards(
             "best_stars": 0,
             "last_decision": None,
             "last_badges": [],
+            "best_completed_xp": 0,
         },
     )
+    previous_topic_state = dict(topic_state)
 
-    completed_before = bool(topic_state.get("completed", False))
+    base_xp = _base_xp_for_clear(decision_norm, stars) if clear else 0
+    previous_best_xp = _as_int(topic_state.get("best_completed_xp"), 0)
+    xp_earned = max(0, base_xp - previous_best_xp) if clear else 0
 
     topic_state["title"] = topic_title
     topic_state["attempts"] = _as_int(topic_state.get("attempts"), 0) + 1
     topic_state["latest_stars"] = stars
-    topic_state["best_stars"] = max(_as_int(topic_state.get("best_stars"), 0), stars)
     topic_state["last_decision"] = decision_norm
-
-    if decision_norm == "pass":
-        xp_earned = 60 + stars * 10
-    elif decision_norm == "borderline":
-        xp_earned = 25 + stars * 5
-    else:
-        xp_earned = 10 + stars * 2
 
     if clear:
         topic_state["completed"] = True
+        topic_state["best_stars"] = max(_as_int(topic_state.get("best_stars"), 0), stars)
+        topic_state["best_completed_xp"] = max(previous_best_xp, base_xp)
         state["streaks"]["current_completion_streak"] = _as_int(
             state["streaks"].get("current_completion_streak"), 0
         ) + 1
     else:
+        xp_earned = 0
         state["streaks"]["current_completion_streak"] = 0
 
     state["streaks"]["best_completion_streak"] = max(
@@ -319,72 +474,16 @@ def apply_evaluation_rewards(
     state["total_xp"] = _as_int(state.get("total_xp"), 0) + xp_earned
 
     badges_awarded: List[Dict[str, str]] = []
-
-    if clear and not completed_before:
-        _award_badge(
-            state,
-            f"level_clear_{topic_id}",
-            f"Level Clear: {topic_id}",
-            f"Completed {topic_title}.",
-            badges_awarded,
-        )
-
-        completed_topics_after = sum(
-            1 for item in state.get("topics", {}).values() if item.get("completed")
-        )
-        if completed_topics_after == 1:
-            _award_badge(
-                state,
-                "first_clear",
-                "First Clear",
-                "Completed the first level.",
-                badges_awarded,
-            )
-
-    if stars >= 3:
-        _award_badge(
-            state,
-            "three_star_scholar",
-            "Three-Star Scholar",
-            "Earned at least 3 stars on a level.",
-            badges_awarded,
-        )
-
-    if stars >= 4:
-        _award_badge(
-            state,
-            "four_star_architect",
-            "Four-Star Architect",
-            "Earned at least 4 stars on a level.",
-            badges_awarded,
-        )
-
-    if stars == 5:
-        _award_badge(
-            state,
-            "five_star_master",
-            "Five-Star Master",
-            "Earned 5 stars on a level.",
-            badges_awarded,
-        )
-
-    if _as_int(scores.get("architect_reasoning"), 0) >= 4:
-        _award_badge(
-            state,
-            "architect_eye",
-            "Architect Eye",
-            "Reached strong architect reasoning on a lesson.",
-            badges_awarded,
-        )
-
-    if _as_int(state["streaks"].get("current_completion_streak"), 0) >= 3:
-        _award_badge(
-            state,
-            "clear_streak_3",
-            "Clear Streak x3",
-            "Completed 3 lessons in a row.",
-            badges_awarded,
-        )
+    _award_capability_badges(
+        state=state,
+        topic_id=topic_id,
+        decision=decision_norm,
+        clear=clear,
+        scores=scores,
+        stars=stars,
+        previous_topic_state=previous_topic_state,
+        awarded=badges_awarded,
+    )
 
     topic_state["last_badges"] = [badge["label"] for badge in badges_awarded]
 
@@ -395,9 +494,13 @@ def apply_evaluation_rewards(
         "decision": decision_norm,
         "completed": clear,
         "xp_earned": xp_earned,
+        "base_xp_for_attempt": base_xp,
+        "best_completed_xp": topic_state.get("best_completed_xp", 0),
+        "xp_policy": "best_completed_attempt_per_topic",
         "total_xp": state["total_xp"],
         "stars_earned": stars,
         "best_stars": topic_state["best_stars"],
+        "scores": dict(scores or {}),
         "badges_awarded": badges_awarded,
         "badge_labels": ", ".join(badge["label"] for badge in badges_awarded),
         "current_completion_streak": state["streaks"]["current_completion_streak"],

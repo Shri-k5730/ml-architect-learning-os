@@ -22,7 +22,7 @@ from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact, fetch_run_artifacts
+from src.utils.supabase_store import append_event, upsert_artifact
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -587,67 +587,38 @@ def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
     )
 
 
-def has_non_empty_mission_answers(data: Optional[Dict[str, Any]]) -> bool:
-    if not isinstance(data, dict):
-        return False
-    for item in data.get("answers", []) or []:
-        if str(item.get("answer", "")).strip():
-            return True
-    return False
-
-
-def fetch_artifact_payload(run_id: str, artifact_type: str) -> Optional[Dict[str, Any]]:
-    try:
-        for row in fetch_run_artifacts(run_id):
-            if row.get("artifact_type") == artifact_type and isinstance(row.get("payload"), dict):
-                return row.get("payload")
-    except Exception:
-        return None
-    return None
-
-
-def load_mission_answers(answer_path: Path, run_state: Dict[str, Any]) -> Dict[str, Any]:
-    """Load mission answers, preferring durable Supabase draft when local runtime is stale/empty."""
-    local_doc = load_json(answer_path)
-    run_id = str(run_state.get("run_id", ""))
-    durable_doc = fetch_artifact_payload(run_id, "answers")
-
-    if has_non_empty_mission_answers(durable_doc) and not has_non_empty_mission_answers(local_doc):
-        save_answers(answer_path, durable_doc)
-        return durable_doc
-
-    return local_doc
-
-
-def save_mission_answers_durable(
-    *,
-    answer_path: Path,
-    data: Dict[str, Any],
-    run_state: Dict[str, Any],
-    topic_id: str,
-    event_type: str = "mission_answers_saved",
-) -> None:
-    """Save mission answers locally and durably to Supabase so Streamlit sleep does not wipe work."""
-    save_answers(answer_path, data)
+def persist_mission_draft_to_supabase(run_state: Dict[str, Any], topic_id: str, answers_doc: Dict[str, Any]) -> None:
+    """Persist draft answers durably so Streamlit sleep does not wipe work."""
     try:
         upsert_artifact(
             run_id=run_state["run_id"],
             artifact_type="answers",
             topic_id=topic_id,
-            payload=data,
+            payload=answers_doc,
         )
         append_event(
-            event_type=event_type,
+            event_type="answers_saved",
             run_id=run_state["run_id"],
             topic_id=topic_id,
-            payload={
-                "answered_count": sum(1 for item in data.get("answers", []) if str(item.get("answer", "")).strip()),
-                "total_count": len(data.get("answers", []) or []),
-            },
+            payload={"answer_count": len(answers_doc.get("answers", [])), "source": "mission_tab_save"},
         )
     except Exception:
-        # Local save should still succeed when Supabase is unavailable.
         pass
+
+
+def render_answer_pressure(question_type: str, answer_text: str) -> None:
+    words = len((answer_text or "").split())
+    if words == 0:
+        st.caption("Target: 80-140 words. Definition → example → production risk → control.")
+        return
+    if words > 180:
+        st.warning(f"{words} words. Too long. Cut repetition and keep only the control/action.")
+    elif words > 140:
+        st.caption(f"{words} words. Acceptable, but tighten if you are repeating definitions.")
+    elif words < 45 and question_type not in {"tiny_hands_on"}:
+        st.caption(f"{words} words. Likely thin. Add one example and one production control.")
+    else:
+        st.caption(f"{words} words. Good length. Now make sure it has a concrete control.")
 
 
 def load_relative_json_or_none(relative_path: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -889,10 +860,54 @@ def status_chip(status: str) -> str:
     return mapping.get(status, status)
 
 
-def compute_overall_metrics(progress_rows: List[Dict[str, str]]) -> Dict[str, Any]:
+def _int_or_none(value: Any) -> Optional[int]:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def topic_needs_attention(row: Dict[str, str], rewards_state: Optional[Dict[str, Any]] = None) -> bool:
+    """Flag completed or revised topics where the learner should revisit the skill.
+
+    Needs Attention should not mean only current status='revise'. A completed
+    2-star/borderline lesson with practical=2 still needs attention.
+    """
+    status = str(row.get("status") or "").strip().lower()
+    if status == "revise":
+        return True
+    if status not in {"completed", "borderline"}:
+        return False
+
+    score_fields = [
+        "last_score_conceptual",
+        "last_score_practical",
+        "last_score_architect",
+        "last_score_communication",
+        "last_score_coding",
+    ]
+    scores = [_int_or_none(row.get(field)) for field in score_fields]
+    present_scores = [score for score in scores if score is not None]
+    if any(score < 3 for score in present_scores):
+        return True
+
+    if rewards_state:
+        topic_reward = get_topic_reward_state(rewards_state, row.get("topic_id", ""))
+        best_stars = topic_reward.get("best_stars")
+        if isinstance(best_stars, int) and 0 < best_stars < 3:
+            return True
+
+    return False
+
+
+def compute_overall_metrics(progress_rows: List[Dict[str, str]], rewards_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     completed = sum(1 for row in progress_rows if row.get("status") == "completed")
     borderline = sum(1 for row in progress_rows if row.get("status") == "borderline")
     revise = sum(1 for row in progress_rows if row.get("status") == "revise")
+    needs_attention_rows = [row for row in progress_rows if topic_needs_attention(row, rewards_state)]
     unlocked = sum(
         1
         for row in progress_rows
@@ -913,11 +928,12 @@ def compute_overall_metrics(progress_rows: List[Dict[str, str]]) -> Dict[str, An
         "completed": completed,
         "borderline": borderline,
         "revise": revise,
+        "needs_attention": len(needs_attention_rows),
+        "needs_attention_topics": [row.get("topic_id") for row in needs_attention_rows],
         "unlocked": unlocked,
         "locked": locked,
         "overall_avg": overall_avg,
     }
-
 
 def compute_display_stars(row: Dict[str, str], rewards_state: Dict[str, Any]) -> str:
     topic_reward = get_topic_reward_state(rewards_state, row["topic_id"])
@@ -1298,13 +1314,8 @@ def run_draft_verification_action(
     answer_path: Path,
     updated_answers: Dict[str, Any],
 ) -> None:
-    save_mission_answers_durable(
-        answer_path=answer_path,
-        data=updated_answers,
-        run_state=run_state,
-        topic_id=topic_id,
-        event_type="mission_answers_saved_before_verify",
-    )
+    save_answers(answer_path, updated_answers)
+    persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
     verification = verify_draft_answers(
         concept_note=build_dataclass(concept_note, ConceptNote),
         architect_note=build_dataclass(architect_note, ArchitectNote),
@@ -1588,7 +1599,7 @@ if cloud_repair_summary.get("error"):
 progress_rows = load_progress_tracker()
 rewards_state = load_rewards_state()
 catalog_source, catalog_count = load_topic_catalog_source()
-metrics = compute_overall_metrics(progress_rows)
+metrics = compute_overall_metrics(progress_rows, rewards_state)
 
 awaiting_run = find_latest_run("awaiting_user_answers")
 stale_awaiting_run = None
@@ -1607,7 +1618,7 @@ if "selected_topic_id" not in st.session_state:
 top_c1, top_c2, top_c3, top_c4, top_c5, top_c6 = st.columns(6)
 top_c1.metric("Completed Levels", metrics["completed"])
 top_c2.metric("Unlocked", metrics["unlocked"])
-top_c3.metric("Needs Attention", metrics["borderline"] + metrics["revise"])
+top_c3.metric("Needs Attention", metrics["needs_attention"])
 top_c4.metric("Avg Score", metrics["overall_avg"] if metrics["overall_avg"] is not None else "-")
 top_c5.metric("Total XP", rewards_state.get("total_xp", 0))
 top_c6.metric("Badges", len(rewards_state.get("badges_unlocked", [])))
@@ -1704,7 +1715,7 @@ with tabs[1]:
         assessment_doc = load_json(awaiting_run / "assessment.json")
 
         answer_path = PROJECT_ROOT / run_state["artifacts"]["answers"]
-        answers_doc = load_mission_answers(answer_path, run_state)
+        answers_doc = load_json(answer_path)
 
         mission_types = sorted({item["type"] for item in answers_doc["answers"]})
         render_topic_hero(run_state, concept_note, mission_types)
@@ -1717,7 +1728,7 @@ with tabs[1]:
         practice_submission = None
         updated_practice_submission = None
 
-        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions"]
+        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions + Verify"]
         if practice_exercise is not None:
             current_tabs.append("⑤ Code Lab")
             submit_tab_label = "⑥ Submit"
@@ -1743,7 +1754,7 @@ with tabs[1]:
 
         with lesson_tabs[3]:
             st.markdown("### Mission Response")
-            st.caption("Answer in your own words. Use the readiness map first so you do not answer a production question with only a definition.")
+            st.caption("Answer in your own words. Aim for 80-140 words: definition, example, production risk, control. Do not write essays.")
             render_mission_bridge(booster, assessment_doc)
             st.divider()
 
@@ -1765,6 +1776,7 @@ with tabs[1]:
                     key=f"{run_state['run_id']}_{item['question_id']}",
                     label_visibility="collapsed",
                 )
+                render_answer_pressure(item.get("type", "mission"), answer_text)
                 updated_answers["answers"].append(
                     {
                         "question_id": item["question_id"],
@@ -1774,18 +1786,14 @@ with tabs[1]:
                     }
                 )
 
-            st.markdown("### Save Progress + Verify Draft")
-            st.caption("Use Save Draft while writing so Streamlit sleep/restart does not wipe your mission answers. Verify Draft gives copy-safe feedback before final submission.")
+            st.markdown("### Save + Verify Draft")
+            st.caption("Save and Verify live here because they are part of writing missions. Final submission is separate.")
             action_c1, action_c2 = st.columns([1, 1])
             with action_c1:
-                if st.button("Save Draft", use_container_width=True, key=f"{run_state['run_id']}_save_draft_missions"):
-                    save_mission_answers_durable(
-                        answer_path=answer_path,
-                        data=updated_answers,
-                        run_state=run_state,
-                        topic_id=topic_id,
-                    )
-                    st.success("Mission draft saved locally and to Supabase.")
+                if st.button("Save Answers", use_container_width=True):
+                    save_answers(answer_path, updated_answers)
+                    persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
+                    st.success("Mission answers saved locally and to Supabase.")
             with action_c2:
                 if st.button("Verify Draft", use_container_width=True):
                     try:
@@ -1861,7 +1869,7 @@ with tabs[1]:
                 """
                 <div class="save-panel">
                     <div class="mission-card-title">Final submission</div>
-                    <div class="small-muted">Only final evaluation lives here. Save Draft and Verify Draft are inside the Missions tab so you can protect progress while writing.</div>
+                    <div class="small-muted">Save and Verify Draft are in the Missions tab. Use this only when you are ready to lock the attempt for evaluation.</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1871,13 +1879,8 @@ with tabs[1]:
                 st.info("Code Lab, if present, is included in final evaluation. Run it before submitting.")
 
             if st.button("Save + Evaluate", use_container_width=True):
-                save_mission_answers_durable(
-                    answer_path=answer_path,
-                    data=updated_answers,
-                    run_state=run_state,
-                    topic_id=topic_id,
-                    event_type="mission_answers_saved_before_final_evaluation",
-                )
+                save_answers(answer_path, updated_answers)
+                persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
                 if updated_practice_submission is not None and practice_submission_path is not None:
                     save_answers(practice_submission_path, updated_practice_submission)
                 with st.spinner("Saving answers, running practical checks, and evaluating mission responses. This finalizes this attempt..."):
@@ -1887,6 +1890,12 @@ with tabs[1]:
                     st.session_state.pop("draft_verification", None)
                     st.session_state.pop("draft_verification_run_id", None)
                     st.rerun()
+
+            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"])
+            if verification_to_show:
+                st.divider()
+                st.caption("Latest draft verification from Missions tab")
+                render_draft_verification_panel(verification_to_show)
 
 
 
@@ -2008,6 +2017,7 @@ with tabs[5]:
 # -----------------------------
 with tabs[6]:
     st.subheader("Rewards")
+    st.caption("XP now uses best completed attempt per topic. Revise/fail attempts earn 0 XP. Retry XP is added only if the retry beats the previous best completed attempt.")
 
     streaks = rewards_state.get("streaks", {})
     c1, c2, c3 = st.columns(3)

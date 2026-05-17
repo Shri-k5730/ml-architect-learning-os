@@ -61,6 +61,12 @@ def _profile_gap(topic_id: str, answer: str) -> List[Dict[str, str]]:
 def _type_gap(question_type: str, answer: str) -> List[str]:
     answer_l = _normalize(answer)
     gaps: List[str] = []
+    word_count = len(answer.split())
+
+    if word_count > 180:
+        gaps.append("Too long. Cut repeated definitions and keep the answer to definition, example, production risk, and control.")
+    elif word_count > 140 and question_type in {"teachback", "concept_check"}:
+        gaps.append("Tighten the answer. This question needs clarity, not an essay.")
 
     if question_type == "tiny_hands_on":
         if not any(token in answer_l for token in ["metric", "rmse", "mae", "r2", "r²", "precision", "recall", "confusion", "calculate", "compare"]):
@@ -77,7 +83,7 @@ def _type_gap(question_type: str, answer: str) -> List[str]:
         if not any(token in answer_l for token in ["example", "manufacturing", "defect", "line", "quality", "stakeholder"]):
             gaps.append("Anchor the explanation in a concrete business example.")
 
-    return gaps[:2]
+    return gaps[:3]
 
 
 def _vague_language_penalty(answer: str) -> int:
@@ -95,6 +101,7 @@ def _readiness_score(answer: str, gap_count: int, misconception_count: int) -> i
     """
     word_count = len((answer or "").split())
     vague_penalty = _vague_language_penalty(answer)
+    overlong_penalty = 1 if word_count > 180 else 0
 
     if word_count < 20:
         return 1
@@ -107,11 +114,12 @@ def _readiness_score(answer: str, gap_count: int, misconception_count: int) -> i
     if gap_count == 2:
         return 3
     if gap_count == 1:
-        return 3 if vague_penalty else 4
+        return 3 if (vague_penalty or overlong_penalty) else 4
 
     # No obvious gap does not mean 5-star readiness. Full evaluation is still
-    # stricter and checks coherence across all answers.
-    return 4
+    # stricter and checks coherence across all answers. Overlong answers are
+    # capped because they usually hide repetition instead of stronger reasoning.
+    return 3 if overlong_penalty else 4
 
 
 def _verdict(score: int) -> str:
