@@ -1708,6 +1708,7 @@ def is_playable_status(status: str) -> bool:
 # -----------------------------
 # Streamlit page
 # -----------------------------
+st.markdown('')
 st.set_page_config(page_title="ML Architect Learning OS", layout="wide")
 inject_theme()
 require_login()
