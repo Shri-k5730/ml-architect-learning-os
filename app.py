@@ -1713,7 +1713,7 @@ st.set_page_config(page_title="ML Learning OS", layout="wide")
 inject_theme()
 require_login()
 
-st.markdown('<div class="main-title">ML Architect Learning OS</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">ML Learning OS</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="sub-title">Level up topic by topic. Track mastery, weak spots, rewards, and architect readiness.</div>',
     unsafe_allow_html=True,
