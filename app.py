@@ -14,6 +14,7 @@ from html import escape
 from zoneinfo import ZoneInfo
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from src.utils.curriculum_catalog import load_topic_catalog_source
 from src.utils.rewards import get_topic_reward_state, load_rewards_state
@@ -85,26 +86,105 @@ def get_secret_value(key: str, default: Any = None) -> Any:
 
 
 def _render_session_heartbeat_status() -> None:
-    """Render a tiny hosted-session heartbeat in the app header.
+    """Render hosted-session heartbeat plus a real browser-side IST clock.
 
-    This is intentionally backend-driven. When wrapped in st.fragment(run_every),
-    Streamlit touches the Python backend periodically while the browser tab and
-    laptop are active. A pure JavaScript clock would only prove that the browser
-    is alive and would not reliably keep the hosted Streamlit session warm.
+    Two separate things happen here:
+    1. The Streamlit fragment reruns this function every 60 seconds, touching the
+       Python backend while the browser tab and laptop are active.
+    2. The embedded browser clock updates every second inside the page, so the
+       visible clock behaves like an actual clock instead of waiting for the
+       backend heartbeat.
     """
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-    heartbeat_text = now_ist.strftime("%H:%M:%S IST")
-    st.session_state["last_backend_heartbeat_ist"] = heartbeat_text
-    st.markdown(
+    backend_heartbeat_text = now_ist.strftime("%H:%M:%S IST")
+    st.session_state["last_backend_heartbeat_ist"] = backend_heartbeat_text
+
+    components.html(
         f"""
-        <div class="session-heartbeat">
-          <div class="session-heartbeat-card">
+        <div class="heartbeat-shell">
+          <div class="heartbeat-card">
             <span class="heartbeat-dot"></span>
-            <span>Backend heartbeat active · {escape(heartbeat_text)} · refresh every 60s</span>
+            <span class="heartbeat-main">Session active</span>
+            <span class="heartbeat-separator">·</span>
+            <span>IST <span id="mlos-ist-clock">--:--:--</span></span>
+            <span class="heartbeat-separator">·</span>
+            <span class="heartbeat-muted">Backend ping {escape(backend_heartbeat_text)}</span>
           </div>
         </div>
+        <style>
+          html, body {{
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          }}
+          .heartbeat-shell {{
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 0 0 6px 0;
+          }}
+          .heartbeat-card {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            border-radius: 999px;
+            padding: 0.42rem 0.76rem;
+            background: rgba(15, 23, 42, 0.78);
+            border: 1px solid rgba(34, 197, 94, 0.30);
+            box-shadow: 0 14px 34px rgba(34, 197, 94, 0.08);
+            color: #dbeafe;
+            font-size: 13px;
+            font-weight: 750;
+            white-space: nowrap;
+          }}
+          .heartbeat-dot {{
+            width: 0.62rem;
+            height: 0.62rem;
+            border-radius: 999px;
+            background: #22c55e;
+            box-shadow: 0 0 0 rgba(34, 197, 94, 0.55);
+            animation: heartbeatPulse 1.8s infinite;
+          }}
+          .heartbeat-main {{ color: #bbf7d0; }}
+          .heartbeat-muted {{ color: #94a3b8; font-weight: 650; }}
+          .heartbeat-separator {{ color: #64748b; }}
+          #mlos-ist-clock {{
+            color: #f8fafc;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.02em;
+          }}
+          @keyframes heartbeatPulse {{
+            0% {{ box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55); }}
+            70% {{ box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }}
+            100% {{ box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }}
+          }}
+          @media (max-width: 780px) {{
+            .heartbeat-shell {{ justify-content: flex-start; }}
+            .heartbeat-card {{ font-size: 12px; flex-wrap: wrap; border-radius: 16px; white-space: normal; }}
+          }}
+        </style>
+        <script>
+          const clockEl = document.getElementById("mlos-ist-clock");
+          function updateISTClock() {{
+            const now = new Date();
+            const parts = new Intl.DateTimeFormat("en-IN", {{
+              timeZone: "Asia/Kolkata",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false
+            }}).format(now);
+            if (clockEl) {{ clockEl.textContent = parts; }}
+          }}
+          updateISTClock();
+          setInterval(updateISTClock, 1000);
+        </script>
         """,
-        unsafe_allow_html=True,
+        height=44,
+        scrolling=False,
     )
 
 
