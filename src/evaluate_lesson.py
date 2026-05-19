@@ -11,6 +11,7 @@ from src.utils.code_runner import build_practice_coaching, run_code_exercise
 import yaml
 
 from src.agents.answer_coach import generate_answer_coaching
+from src.agents.evaluation_language_guard import sanitize_evaluation_language_noise
 
 from src.agents.evaluator_refiner import (
     build_evaluator_refiner_payload,
@@ -53,6 +54,7 @@ def persist_evaluation_to_supabase(
     practice_submission: Dict[str, Any] | None = None,
     practice_result: Dict[str, Any] | None = None,
     practice_coaching: Dict[str, Any] | None = None,
+    language_noise: List[Dict[str, Any]] | None = None,
 ) -> None:
     upsert_run(
         run_id=run_id,
@@ -114,6 +116,18 @@ def persist_evaluation_to_supabase(
             artifact_type="practice_coaching",
             topic_id=topic_id,
             payload=practice_coaching,
+        )
+
+    if language_noise:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="language_noise",
+            topic_id=topic_id,
+            payload={
+                "topic_id": topic_id,
+                "items": language_noise,
+                "policy": "Typos/spelling are separated from technical evaluation. Technical-term misuse remains content feedback.",
+            },
         )
 
     upsert_state(
@@ -522,6 +536,7 @@ def main() -> None:
     )
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
     evaluation = apply_practice_gate_to_evaluation(evaluation, practice_result)
+    evaluation, language_noise = sanitize_evaluation_language_noise(evaluation, user_answers)
 
     answer_coaching = None
 
@@ -678,6 +693,7 @@ topic_id: {topic_id}
             practice_submission=practice_submission,
             practice_result=practice_result,
             practice_coaching=practice_coaching,
+            language_noise=language_noise,
         )
         write_log(run_id, "Supabase persistence completed for evaluation.")
     except Exception as exc:

@@ -48,7 +48,54 @@ COMMON_CORRECTIONS = {
     "teh": "the",
     "hte": "the",
     "alot": "a lot",
+    "descipline": "discipline",
+    "disciplinee": "discipline",
+    "netween": "between",
+    "predcitions": "predictions",
+    "predcitons": "predictions",
+    "predcition": "prediction",
+    "underfittment": "underfitting",
+    "underfiting": "underfitting",
+    "overfittment": "overfitting",
+    "deffects": "defects",
+    "defectives": "defective parts",
+    "regulariaztion": "regularization",
+    "regularisation": "regularization",
+    "streangth": "strength",
+    "imbalenced": "imbalanced",
+    "imbalanceed": "imbalanced",
+    "calss": "class",
+    "calsses": "classes",
+    "volumne": "volume",
+    "trasdeoffs": "trade-offs",
+    "tradeoffs": "trade-offs",
+    "arbritarily": "arbitrarily",
+    "arbitary": "arbitrary",
+    "postives": "positives",
+    "postive": "positive",
+    "negitives": "negatives",
+    "negitive": "negative",
+    "shits": "shifts",
+    "cloud": "could",
+    "succesful": "successful",
+    "occurance": "occurrence",
+    "occurances": "occurrences",
+    "tehreshold": "threshold",
+    "threshhold": "threshold",
+    "threhold": "threshold",
+    "recalll": "recall",
+    "precission": "precision",
+    "weigth": "weight",
+    "weigths": "weights",
+    "paramter": "parameter",
+    "paramters": "parameters",
+    "hyparameter": "hyperparameter",
+    "hyperparamter": "hyperparameter",
 }
+
+# Words that are valid in normal English but are often used in a technically risky way
+# in this learning system. These are not spelling issues; they are precision hints.
+
 
 GENERIC_FILLER_PHRASES = [
     "model fails in production",
@@ -78,7 +125,24 @@ TECHNICAL_PRECISION_HINTS = [
         "pattern": r"fit[- ]?transform(ed)?\s+on\s+.*entire dataset|fit[- ]?transformed\s+on\s+.*test",
         "hint": "Fit/transform clarity: say the scaler/transformer was fitted on full data. The prevention is train-only fit, then transform validation/test/production.",
     },
+    {
+        "pattern": r"\b(temperature|humidity|pressure|cycle time|defect rate|feature|column)\b.{0,60}\bhyperparameter\b|\bhyperparameter\b.{0,60}\b(temperature|humidity|pressure|cycle time|feature|column)\b",
+        "hint": "Technical precision: temperature, pressure, humidity, and cycle time are features, not hyperparameters. Regularization strength is a hyperparameter; learned weights/coefficients are model parameters.",
+    },
+    {
+        "pattern": r"regularization.{0,80}(hyperparameter|hyperparameters).{0,80}(weight|weightage|importance)|regularization.{0,80}(reduces|penalizes).{0,80}hyperparameter",
+        "hint": "Technical precision: regularization penalizes learned model parameters/weights. The regularization strength itself is a hyperparameter you tune.",
+    },
+    {
+        "pattern": r"high precision (increases|increase|creates|causes).{0,40}false negatives",
+        "hint": "Technical precision: high precision does not itself increase false negatives. A strict/high threshold can raise precision while reducing recall, creating more missed positives/false negatives.",
+    },
+    {
+        "pattern": r"precision.{0,50}false negatives|recall.{0,50}false positives",
+        "hint": "Metric precision: precision is about false positives among predicted positives; recall is about false negatives among actual positives.",
+    },
 ]
+
 
 
 def _words(text: str) -> List[str]:

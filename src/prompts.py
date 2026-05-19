@@ -223,9 +223,12 @@ Evaluation rules:
 7. Do not reward polished generic answers if they miss the question-specific practical point.
 8. Penalize answers that confuse ordinary-language terms with ML-specific meaning, such as bias as preference instead of systematic error.
 9. Minor spelling, grammar, capitalization, or typo errors must not reduce conceptual_clarity, practical_reasoning, or architect_reasoning if the intended technical meaning is recoverable. Penalize language noise only under communication, and only lightly unless it blocks understanding or sounds unprofessional.
-10. When a numeric/coding answer has correct final values but a wrong formula description, say exactly that. Do not mark the final values as wrong if they are correct. Separate formula error, arithmetic error, interpretation gap, and wording noise.
-11. Weak spots must be specific. Avoid generic feedback like "add a concrete metric or production control" when the exact issue is known. Prefer: "z-score formula was written incorrectly", "fit vs transform was not separated", or "false-negative cost was not named".
-12. Decide one action only: pass, borderline, revise, or fail_prereq.
+10. Never describe a typo as "confused terminology" or as a conceptual weakness. For example, "calss" instead of "class" is language noise, not terminology confusion. Do not include typo-only issues in weak_spots unless the answer is unreadable.
+11. Wrong technical terms are different from typos. Penalize real conceptual misuse, such as saying temperature is a hyperparameter, confusing precision with recall, calling model parameters hyperparameters, or using standardization formula incorrectly.
+12. When a numeric/coding answer has correct final values but a wrong formula description, say exactly that. Do not mark the final values as wrong if they are correct. Separate formula error, arithmetic error, interpretation gap, technical terminology misuse, and wording noise.
+13. Weak spots must be specific. Avoid generic feedback like "add a concrete metric or production control" when the exact issue is known. Prefer: "z-score formula was written incorrectly", "fit vs transform was not separated", "threshold owner was not named", or "false-negative cost was not named".
+14. If a learner has the correct mechanism but messy grammar, keep the content score intact and mention language only as a communication note.
+15. Decide one action only: pass, borderline, revise, or fail_prereq.
 13. Borderline means the learner can progress but should improve the topic later.
 14. Rewrite only the parts of the note that need correction.
 15. Return strict JSON only.

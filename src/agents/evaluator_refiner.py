@@ -16,6 +16,7 @@ from src.schemas import (
 )
 from src.utils.validator import ValidationError, build_dataclass
 from src.blueprints.advanced_ml import blueprint_context
+from src.agents.writing_assist import analyze_answer_text
 
 
 class EvaluatorRefinerAgentError(Exception):
@@ -39,6 +40,24 @@ def build_evaluator_refiner_payload(
         "architect_note": architect_note.to_dict(),
         "assessment": assessment.to_dict(),
         "user_answers": [answer.to_dict() for answer in user_answers],
+        "language_precision_audit": [
+            {
+                "question_id": answer.question_id,
+                "writing_assist": analyze_answer_text(answer.answer),
+            }
+            for answer in user_answers
+        ],
+        "language_policy": {
+            "typos_are_language_noise": True,
+            "typos_must_not_be_called_terminology_confusion": True,
+            "typos_must_not_reduce_content_scores_when_meaning_is_clear": True,
+            "wrong_technical_terms_are_content_issues": [
+                "feature_vs_parameter_vs_hyperparameter",
+                "precision_vs_recall",
+                "normalization_vs_standardization",
+                "score_vs_threshold_decision",
+            ],
+        },
         "scoring_rubric": scoring_rubric,
         "target_role": learner_profile.get("target_role", "ML Architect"),
         "learning_goal": learner_profile.get("learning_goal", ""),

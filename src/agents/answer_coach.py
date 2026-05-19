@@ -7,6 +7,7 @@ from src.agents.topic_coaching_profiles import (
     get_topic_coaching_profile,
     profile_golden_answer,
 )
+from src.blueprints.advanced_ml import get_blueprint
 from src.schemas import (
     ArchitectNote,
     Assessment,
@@ -203,46 +204,107 @@ def _missing_points(
     return missing[:5], misconceptions[:5]
 
 
+def _join(items: List[str], limit: int = 4) -> str:
+    return "; ".join(str(item) for item in (items or [])[:limit] if str(item).strip())
+
+
+def _blueprint_by_type(topic_id: str, question_type: str, question: str, expected_focus: List[str]) -> str:
+    """Build an actual sample answer from the expert blueprint.
+
+    This intentionally avoids meta-text like "a stronger answer should...". The learner
+    needs an example answer after evaluation, not another checklist.
+    """
+    bp = get_blueprint(topic_id) or {}
+    title = bp.get("title", "this concept")
+    definition = bp.get("definition", "")
+    mechanism = bp.get("core_mechanism", "")
+    worked = bp.get("worked_example", "")
+    controls = bp.get("system_design_controls", []) or []
+    nuances = bp.get("nuances", []) or []
+    focus = _join(expected_focus, 4)
+    control_text = _join(controls, 5) or "validation evidence, monitoring rule, fallback path, and owner response"
+
+    # Topic-specific concrete examples where generic blueprint text is not enough.
+    if topic_id == "mlf_014" and question_type == "tiny_hands_on":
+        return (
+            "For min-max scaling, use scaled = (x - min) / (max - min). Here min=50 and max=100, so the scaled values are "
+            "[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]. For z-score standardization, use z = (x - mean) / std. "
+            "With mean=75 and population std about 17.08, the standardized values are approximately "
+            "[-1.46, -0.88, -0.29, 0.29, 0.88, 1.46]. The architecture rule is to fit min, max, mean, and std on training data only, then transform validation, test, and production using the saved transformer."
+        )
+    if topic_id == "mlf_015" and question_type == "concept_check":
+        return (
+            "Regularization is a complexity penalty added during training so the model does not rely too heavily on noisy or overly specific patterns. "
+            "It controls variance by discouraging extreme learned weights. L1 can push some coefficients to zero, while L2 usually shrinks coefficients without removing them completely. "
+            "Too little regularization can leave the model overfit; too much can suppress useful signal and cause underfitting. I would choose the strength using validation curves or train-validation gap evidence."
+        )
+    if topic_id == "mlf_015" and question_type == "architect_decision":
+        return (
+            "I would treat regularization strength as a governed hyperparameter. First, compare training and validation curves across candidate strengths. "
+            "Second, check segment performance so a setting that looks good on average does not miss a defect type or plant. Third, select the value that reduces overfitting without collapsing useful signal. "
+            "In production, I would monitor the same business-critical metrics and trigger model review if validation-like behavior degrades after deployment."
+        )
+    if topic_id == "mlf_016" and question_type == "architect_decision":
+        return (
+            "I would define threshold governance as a business policy, not a default 0.5 setting. The policy would include a cost matrix for missed defects versus extra inspections, "
+            "a minimum defect recall target, an acceptable alert volume, an owner for threshold changes, and a review cadence. I would monitor precision, recall, false negatives, and alert volume by product line or defect type. "
+            "If recall drops below target or alert volume exceeds capacity, the owner reviews threshold, fallback inspection, and retraining evidence."
+        )
+    if topic_id == "mlf_017" and question_type == "tiny_hands_on":
+        return (
+            "There are 9,800 good parts and 200 defective parts, so total parts = 10,000. If the model predicts every part as good, TN=9,800, FN=200, TP=0, and FP=0. "
+            "Accuracy = (TP+TN)/total = 9,800/10,000 = 98%. Defect recall = TP/(TP+FN) = 0/(0+200) = 0%. "
+            "This is a bad defect model despite high accuracy because it catches none of the defective parts. I would judge it using minority recall, false negatives, precision, F1, and PR-AUC."
+        )
+    if topic_id == "mlf_017" and question_type == "architect_decision":
+        return (
+            "I would treat class imbalance as a metric and decision-control problem. First, define the cost of missed defects versus extra inspections. "
+            "Second, validate with confusion matrix, minority recall, precision, F1, PR-AUC, and segment checks by defect type or plant. Third, test controls such as class weights, resampling, and threshold tuning. "
+            "In production, monitor minority-class recall and false negatives, with an owner reviewing breaches against the agreed threshold."
+        )
+
+    if question_type == "concept_check":
+        return (
+            f"{definition or title}. In practical terms, the mechanism is: {mechanism or focus}. "
+            f"The important distinction is not the label of the technique, but how it changes model behavior. A strong answer should connect the concept to {focus or 'the topic-specific risk'} without turning it into generic production-risk language."
+        )
+    if question_type == "tiny_hands_on":
+        return (
+            f"Start from the exact numbers or scenario in the question, then apply the mechanism: {mechanism or focus}. "
+            f"After the calculation or comparison, state the practical decision. For this topic, the decision should be tied to {focus or control_text}, not to a broad statement that the model may fail."
+        )
+    if question_type == "failure_diagnosis":
+        return (
+            f"The symptom should be separated from the cause. The likely mechanism is: {mechanism or focus}. "
+            f"Evidence to inspect would include the relevant metrics, pipeline step, or segment behavior. Prevention should use controls such as {control_text}."
+        )
+    if question_type == "architect_decision":
+        return (
+            f"I would govern {title} through explicit controls: {control_text}. The decision should be validated with evidence tied to {focus or 'the business-critical metric'}. "
+            "A production-ready answer should also name the monitoring signal, threshold or review rule, and owner/action when the rule is breached."
+        )
+    if question_type == "teachback":
+        return (
+            f"I would explain it simply: {bp.get('plain_intuition', definition) or definition}. "
+            f"For a business example, {worked or 'connect the concept to a concrete defect, inspection, or quality decision'}. "
+            "The key message is the business consequence and the control, not the technical vocabulary."
+        )
+
+    return (
+        f"{definition or title}. Mechanism: {mechanism or focus}. Controls: {control_text}. "
+        "Tie the answer to the exact scenario and finish with the production decision."
+    )
+
+
 def _fallback_better_answer(
+    topic_id: str,
     question_type: str,
     question: str,
     expected_focus: List[str],
     concept_note: ConceptNote,
     architect_note: ArchitectNote,
 ) -> str:
-    focus_sentence = "; ".join(expected_focus[:3]) if expected_focus else "the concept, practical behavior, and production implication"
-
-    if question_type == "concept_check":
-        return (
-            f"A stronger answer should define {concept_note.title} directly, state why the wrong interpretation fails, "
-            f"and connect the concept to model behavior on unseen data. Cover: {focus_sentence}."
-        )
-
-    if question_type == "tiny_hands_on":
-        return (
-            "A stronger answer should show the exact calculation path, separate formula mistakes from final values, "
-            f"and state the practical decision. Cover: {focus_sentence}."
-        )
-
-    if question_type == "failure_diagnosis":
-        return (
-            "A stronger answer should separate symptom from cause: what was observed, what likely failed, "
-            f"and what evidence would confirm it. Cover: {focus_sentence}."
-        )
-
-    if question_type == "architect_decision":
-        return (
-            "A stronger answer should name the design controls, the metric or threshold, the monitoring rule, "
-            f"and the operational response. Cover: {focus_sentence}."
-        )
-
-    if question_type == "teachback":
-        return (
-            "A stronger answer should explain the idea in simple language, use a concrete business example, "
-            f"and preserve the production implication. Cover: {focus_sentence}."
-        )
-
-    return f"A stronger answer should directly address the mission and cover: {focus_sentence}."
+    return _blueprint_by_type(topic_id, question_type, question, expected_focus)
 
 
 def _better_answer(
@@ -255,9 +317,8 @@ def _better_answer(
 ) -> str:
     golden = profile_golden_answer(topic_id, question_type)
     if golden:
-        return f"A stronger answer: {golden}"
-    return _fallback_better_answer(question_type, question, expected_focus, concept_note, architect_note)
-
+        return golden
+    return _fallback_better_answer(topic_id, question_type, question, expected_focus, concept_note, architect_note)
 
 def _why_better(question_type: str) -> str:
     if question_type == "tiny_hands_on":
