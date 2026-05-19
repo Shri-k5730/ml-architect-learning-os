@@ -7,8 +7,10 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 from html import escape
 
 import streamlit as st
@@ -310,6 +312,57 @@ def inject_theme() -> None:
             justify-content: space-between;
             gap: 1rem;
             margin-bottom: 1rem;
+        }
+
+        .heartbeat-card {
+            border-radius: 18px;
+            padding: 0.75rem 0.9rem;
+            margin-top: 0.2rem;
+            background: rgba(15, 23, 42, 0.76);
+            border: 1px solid rgba(34, 197, 94, 0.28);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.24);
+            color: #d1fae5;
+            text-align: right;
+            min-width: 250px;
+        }
+
+        .heartbeat-topline {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 0.45rem;
+            font-weight: 850;
+            color: #bbf7d0;
+            font-size: 0.9rem;
+        }
+
+        .heartbeat-dot {
+            width: 0.65rem;
+            height: 0.65rem;
+            border-radius: 999px;
+            background: #22c55e;
+            box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.70);
+            animation: heartbeatPulse 1.8s infinite;
+        }
+
+        @keyframes heartbeatPulse {
+            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.70); }
+            70% { box-shadow: 0 0 0 9px rgba(34, 197, 94, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+        }
+
+        .heartbeat-time {
+            color: #f8fafc;
+            font-weight: 900;
+            letter-spacing: 0.02em;
+            margin-top: 0.18rem;
+            font-size: 1rem;
+        }
+
+        .heartbeat-note {
+            color: #94a3b8;
+            font-size: 0.76rem;
+            margin-top: 0.12rem;
         }
 
         .status-strip {
@@ -1706,17 +1759,48 @@ def is_playable_status(status: str) -> bool:
 
 
 # -----------------------------
+# Native Streamlit heartbeat
+# -----------------------------
+def _render_heartbeat_markup(native_refresh: bool) -> None:
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    refresh_label = "Backend refresh every 3 min" if native_refresh else "Static fallback . refresh manually"
+    st.markdown(
+        f"""
+        <div class="heartbeat-card">
+            <div class="heartbeat-topline"><span class="heartbeat-dot"></span><span>Session active</span></div>
+            <div class="heartbeat-time">IST {now_ist:%H:%M:%S}</div>
+            <div class="heartbeat-note">{refresh_label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every="180s")
+    def render_session_heartbeat_header() -> None:
+        _render_heartbeat_markup(native_refresh=True)
+else:
+    def render_session_heartbeat_header() -> None:
+        _render_heartbeat_markup(native_refresh=False)
+
+
+# -----------------------------
 # Streamlit page
 # -----------------------------
 st.set_page_config(page_title="ML Architect Learning OS", layout="wide")
 inject_theme()
 require_login()
 
-st.markdown('<div class="main-title">ML Architect Learning OS</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="sub-title">Level up topic by topic. Track mastery, weak spots, rewards, and architect readiness.</div>',
-    unsafe_allow_html=True,
-)
+header_left, header_right = st.columns([4.6, 1.4])
+with header_left:
+    st.markdown('<div class="main-title">ML Architect Learning OS</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sub-title">Level up topic by topic. Track mastery, weak spots, rewards, and architect readiness.</div>',
+        unsafe_allow_html=True,
+    )
+with header_right:
+    render_session_heartbeat_header()
 
 cloud_repair_summary = repair_cloud_state_on_startup()
 if cloud_repair_summary.get("error"):
