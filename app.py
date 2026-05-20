@@ -27,7 +27,7 @@ from src.agents.writing_assist import analyze_answer_text
 from src.agents.tutor_narrative import get_tutor_narrative
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact
+from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -739,10 +739,16 @@ def run_module(
     return ok, output.strip()
 
 
-def start_lesson_for_topic(topic_id: Optional[str] = None) -> tuple[bool, str]:
+def start_lesson_for_topic(topic_id: Optional[str] = None, allow_completed_restart: bool = False) -> tuple[bool, str]:
+    env_extra = None
+    if allow_completed_restart:
+        env_extra = {
+            "ML_OS_ALLOW_RESTART_COMPLETED": "true",
+            "ML_OS_REDO_MODE": "true",
+        }
     if topic_id:
-        return run_module("src.start_lesson", args=["--topic_id", topic_id])
-    return run_module("src.start_lesson")
+        return run_module("src.start_lesson", args=["--topic_id", topic_id], env_extra=env_extra)
+    return run_module("src.start_lesson", env_extra=env_extra)
 
 
 def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
@@ -751,6 +757,287 @@ def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+# -----------------------------
+# Review / Redo helpers
+# -----------------------------
+def fetch_topic_runs_for_review(topic_id: str, limit: int = 30) -> List[Dict[str, Any]]:
+    """Fetch run history for a topic from Supabase, with local runtime fallback."""
+    rows: List[Dict[str, Any]] = []
+    try:
+        client = get_supabase_client()
+        if client is not None:
+            result = (
+                client.table("mlos_runs")
+                .select("run_id, topic_id, topic_title, phase, status, created_at, updated_at")
+                .eq("topic_id", topic_id)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            rows = getattr(result, "data", None) or []
+    except Exception:
+        rows = []
+
+    seen = {row.get("run_id") for row in rows}
+    if RUNS_DIR.exists():
+        local_rows: List[Dict[str, Any]] = []
+        for run_dir in RUNS_DIR.iterdir():
+            state_path = run_dir / "run_state.json"
+            if not state_path.exists():
+                continue
+            try:
+                state = load_json(state_path)
+            except Exception:
+                continue
+            if state.get("topic_id") != topic_id:
+                continue
+            run_id = state.get("run_id") or run_dir.name
+            if run_id in seen:
+                continue
+            local_rows.append(
+                {
+                    "run_id": run_id,
+                    "topic_id": topic_id,
+                    "topic_title": state.get("topic_name") or topic_id,
+                    "phase": state.get("phase"),
+                    "status": state.get("status"),
+                    "created_at": None,
+                    "updated_at": None,
+                    "source": "local_runtime",
+                }
+            )
+        rows.extend(sorted(local_rows, key=lambda item: str(item.get("run_id") or ""), reverse=True))
+
+    return rows
+
+
+def _artifact_payload_map_from_supabase(run_id: str) -> Dict[str, Any]:
+    try:
+        rows = fetch_run_artifacts(run_id)
+    except Exception:
+        rows = []
+    payloads: Dict[str, Any] = {}
+    for row in rows or []:
+        artifact_type = row.get("artifact_type")
+        if not artifact_type:
+            continue
+        payloads[artifact_type] = row.get("payload") if row.get("payload") is not None else row.get("text_payload")
+    return payloads
+
+
+def _artifact_payload_map_from_local(run_id: str) -> Dict[str, Any]:
+    run_dir = RUNS_DIR / run_id
+    payloads: Dict[str, Any] = {}
+    if not run_dir.exists():
+        return payloads
+
+    local_files = {
+        "run_state": run_dir / "run_state.json",
+        "selected_topic": run_dir / "selected_topic.json",
+        "concept_note": run_dir / "concept_note.json",
+        "architect_note": run_dir / "architect_note.json",
+        "assessment": run_dir / "assessment.json",
+        "evaluation": run_dir / "evaluation.json",
+        "answer_coaching": run_dir / "answer_coaching.json",
+        "practice_result": run_dir / "practice_result.json",
+    }
+    for artifact_type, file_path in local_files.items():
+        if file_path.exists():
+            try:
+                payloads[artifact_type] = load_json(file_path)
+            except Exception:
+                pass
+
+    state = payloads.get("run_state") or {}
+    answer_rel = ((state.get("artifacts") or {}).get("answers"))
+    if answer_rel:
+        answer_path = PROJECT_ROOT / answer_rel
+        if answer_path.exists():
+            try:
+                payloads["answers"] = load_json(answer_path)
+            except Exception:
+                pass
+    return payloads
+
+
+def load_review_payloads(run_id: str) -> Dict[str, Any]:
+    payloads = _artifact_payload_map_from_supabase(run_id)
+    local_payloads = _artifact_payload_map_from_local(run_id)
+    for key, value in local_payloads.items():
+        payloads.setdefault(key, value)
+    return payloads
+
+
+def _score_average(scores: Dict[str, Any]) -> Optional[float]:
+    vals = []
+    for key in ["conceptual_clarity", "practical_reasoning", "architect_reasoning", "communication", "coding_correctness"]:
+        value = scores.get(key)
+        if value is None:
+            continue
+        try:
+            vals.append(float(value))
+        except Exception:
+            continue
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
+def _format_run_option(row: Dict[str, Any]) -> str:
+    run_id = str(row.get("run_id") or "-")
+    phase = str(row.get("phase") or "-")
+    status = str(row.get("status") or "-")
+    created = str(row.get("created_at") or "local")
+    return f"{created} · {status} · {phase} · {run_id}"
+
+
+def render_review_payloads(payloads: Dict[str, Any]) -> None:
+    evaluation = payloads.get("evaluation") or {}
+    answers_doc = payloads.get("answers") or payloads.get("answer_template") or {}
+    coaching_doc = payloads.get("answer_coaching") or {}
+    concept_note = payloads.get("concept_note") or {}
+    architect_note = payloads.get("architect_note") or {}
+
+    if evaluation:
+        st.markdown("### Evaluation")
+        decision = str(evaluation.get("decision", "-")).upper()
+        avg = _score_average(evaluation.get("scores", {}) or {})
+        if avg is not None:
+            st.caption(f"Decision: {decision} · Average score: {avg:.2f}")
+        else:
+            st.caption(f"Decision: {decision}")
+        render_score_cards(evaluation)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Strengths**")
+            for item in evaluation.get("strengths", []) or []:
+                st.markdown(f"- {item}")
+        with c2:
+            st.markdown("**Weak spots**")
+            for item in evaluation.get("weak_spots", []) or []:
+                st.markdown(f"- {item}")
+
+        if evaluation.get("refined_architect_summary"):
+            st.markdown("**Refined architect summary**")
+            st.info(evaluation.get("refined_architect_summary"))
+    else:
+        st.info("No final evaluation found for this run yet.")
+
+    st.divider()
+    st.markdown("### Answers + Coaching")
+    answers_by_q = {item.get("question_id"): item for item in answers_doc.get("answers", []) or []}
+    coaching_items = (coaching_doc.get("coaching") or []) if isinstance(coaching_doc, dict) else []
+    coaching_by_q = {item.get("question_id"): item for item in coaching_items if isinstance(item, dict)}
+
+    if not answers_by_q and not coaching_by_q:
+        st.info("No answer/coaching artifacts found for this run.")
+    else:
+        qids = sorted(set(answers_by_q) | set(coaching_by_q))
+        for qid in qids:
+            answer_item = answers_by_q.get(qid, {})
+            coaching = coaching_by_q.get(qid, {})
+            question = answer_item.get("question") or coaching.get("question") or qid
+            with st.expander(f"{qid} · {question}", expanded=False):
+                answer = answer_item.get("answer") or coaching.get("your_answer") or ""
+                st.markdown("**Your answer**")
+                st.write(answer if answer else "-")
+
+                if coaching:
+                    quality = coaching.get("answer_quality") or coaching.get("quality_label") or "-"
+                    st.markdown(f"**Coaching verdict:** {str(quality).upper()}")
+                    missing = coaching.get("what_was_missing") or coaching.get("missing") or []
+                    if missing:
+                        st.markdown("**What was missing**")
+                        for item in missing:
+                            st.markdown(f"- {item}")
+                    better = coaching.get("better_answer") or coaching.get("stronger_answer")
+                    if better:
+                        st.markdown("**Stronger sample answer**")
+                        st.info(str(better))
+                    upgrade = coaching.get("architect_upgrade")
+                    if upgrade:
+                        st.markdown("**Architect upgrade**")
+                        st.write(str(upgrade))
+
+    st.divider()
+    with st.expander("Lesson artifacts", expanded=False):
+        if concept_note:
+            st.markdown("**Concept note**")
+            st.json(concept_note)
+        if architect_note:
+            st.markdown("**Architect note**")
+            st.json(architect_note)
+
+
+def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Optional[Path], rewards_state: Dict[str, Any]) -> None:
+    st.subheader("Review / Redo")
+    st.caption("Review completed attempts or deliberately start a new attempt for a completed topic. Redo never erases history and rewards keep the best completed attempt.")
+
+    if not progress_rows:
+        st.info("No topics available.")
+        return
+
+    topic_options = [row.get("topic_id") for row in progress_rows if row.get("topic_id")]
+    default_topic = st.session_state.get("review_topic_id") or (topic_options[0] if topic_options else None)
+    if default_topic not in topic_options and topic_options:
+        default_topic = topic_options[0]
+
+    topic_label_map = {
+        row.get("topic_id"): f"{row.get('topic_id')} · {row.get('title')} · {row.get('status')}"
+        for row in progress_rows
+        if row.get("topic_id")
+    }
+    selected_topic_id = st.selectbox(
+        "Topic",
+        options=topic_options,
+        index=topic_options.index(default_topic) if default_topic in topic_options else 0,
+        format_func=lambda tid: topic_label_map.get(tid, tid),
+    )
+    st.session_state.review_topic_id = selected_topic_id
+
+    topic_row = next((row for row in progress_rows if row.get("topic_id") == selected_topic_id), {})
+    status = str(topic_row.get("status") or "")
+    topic_reward = get_topic_reward_state(rewards_state, selected_topic_id)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Status", status or "-")
+    c2.metric("Attempts", topic_row.get("attempt_count", "-"))
+    c3.metric("Best Stars", topic_reward.get("best_stars", 0))
+    c4.metric("Latest Stars", topic_reward.get("latest_stars", topic_reward.get("best_stars", 0)))
+
+    st.markdown("### Start a redo attempt")
+    if awaiting_run is not None:
+        active_state = load_json(awaiting_run / "run_state.json")
+        st.warning(f"Finish the active lesson first: {active_state.get('topic_id')} · {active_state.get('run_id')}")
+    elif status != "completed":
+        st.info("Redo is enabled for completed topics only. Use Start Next Lesson for the current unlocked topic.")
+    else:
+        st.caption("This creates a fresh run for the same topic. It does not erase the old attempt. XP/rewards only improve if the new completed attempt beats the previous best.")
+        if st.button(f"Start Redo Attempt · {selected_topic_id}", use_container_width=True, type="secondary"):
+            with st.spinner(f"Starting redo attempt for {selected_topic_id}..."):
+                ok, output = start_lesson_for_topic(selected_topic_id, allow_completed_restart=True)
+            record_action_result("Start Redo Attempt", ok, output)
+            if ok:
+                st.rerun()
+
+    st.divider()
+    st.markdown("### Attempt history")
+    topic_runs = fetch_topic_runs_for_review(selected_topic_id)
+    if not topic_runs:
+        st.info("No runs found for this topic yet.")
+        return
+
+    run_ids = [row.get("run_id") for row in topic_runs if row.get("run_id")]
+    selected_run_id = st.selectbox(
+        "Run",
+        options=run_ids,
+        format_func=lambda rid: _format_run_option(next((row for row in topic_runs if row.get("run_id") == rid), {"run_id": rid})),
+    )
+    payloads = load_review_payloads(selected_run_id)
+    render_review_payloads(payloads)
 
 
 def persist_mission_draft_to_supabase(run_state: Dict[str, Any], topic_id: str, answers_doc: Dict[str, Any]) -> None:
@@ -1967,6 +2254,7 @@ tabs = st.tabs(
         "📚 Notes Vault",
         "🧾 Run Details",
         "🏆 Rewards",
+        "🔁 Review / Redo",
     ]
 )
 
@@ -1986,6 +2274,21 @@ with tabs[0]:
             for j, row in enumerate(progress_rows[i:i + cols_per_row]):
                 with cols[j]:
                     render_level_card(row, st.session_state.selected_topic_id, rewards_state)
+                    topic_id = row.get("topic_id", "")
+                    status = row.get("status", "")
+                    action_cols = st.columns(2)
+                    with action_cols[0]:
+                        if st.button("Review", key=f"review_{topic_id}", use_container_width=True, disabled=not topic_id):
+                            st.session_state.review_topic_id = topic_id
+                            st.info("Open the Review / Redo tab to inspect this topic.")
+                    with action_cols[1]:
+                        redo_disabled = awaiting_run is not None or status != "completed"
+                        if st.button("Redo", key=f"redo_{topic_id}", use_container_width=True, disabled=redo_disabled):
+                            with st.spinner(f"Starting redo attempt for {topic_id}..."):
+                                ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=True)
+                            record_action_result("Start Redo Attempt", ok, output)
+                            if ok:
+                                st.rerun()
 
     st.divider()
     st.subheader("Latest Result")
@@ -2337,3 +2640,10 @@ with tabs[6]:
         st.info("No reward history yet.")
     else:
         st.dataframe(reward_history_display_rows(reward_history[-10:]), use_container_width=True)
+
+
+# -----------------------------
+# REVIEW / REDO TAB
+# -----------------------------
+with tabs[7]:
+    render_review_redo_tab(progress_rows, awaiting_run, rewards_state)
