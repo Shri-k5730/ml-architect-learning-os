@@ -324,6 +324,8 @@ def _is_stale_active_run(active_state: Dict[str, Any], completed_topics: set[str
     next_action = str(active_state.get("next_action") or "").strip()
     if not topic_id:
         return False
+    if active_state.get("redo_mode") is True or str(active_state.get("selection_mode") or "") == "retry":
+        return False
     return (
         topic_id in completed_topics
         and phase == "awaiting_user_answers"
@@ -516,7 +518,7 @@ def build_fallback_assessment(topic: Topic, concept_note: ConceptNote, architect
 def persist_lesson_start_to_supabase(
     run_id: str,
     topic: Topic,
-    final_run_state: RunState,
+    final_run_state: RunState | Dict[str, Any],
     selected,
     concept_note,
     architect_note,
@@ -525,7 +527,7 @@ def persist_lesson_start_to_supabase(
     practice_exercise: dict | None = None,
     practice_submission_template: dict | None = None,
 ) -> None:
-    run_state_payload = final_run_state.to_dict()
+    run_state_payload = final_run_state.to_dict() if hasattr(final_run_state, "to_dict") else dict(final_run_state)
     upsert_run(
         run_id=run_id,
         topic_id=topic.topic_id,
@@ -746,13 +748,19 @@ def main() -> None:
         next_action="await_user_answers",
     )
 
-    write_json(f"runs/{run_id}/run_state.json", final_run_state)
+    final_run_state_payload = final_run_state.to_dict()
+    final_run_state_payload["selection_mode"] = selected.selection_mode
+    final_run_state_payload["redo_mode"] = selected.selection_mode == "retry"
+    if selected.selection_mode == "retry":
+        final_run_state_payload["next_action"] = "await_user_answers"
+        final_run_state_payload["redo_notice"] = "Redo attempt for a previously completed topic. Existing progress and rewards history are not erased."
+    write_json(f"runs/{run_id}/run_state.json", final_run_state_payload)
 
     try:
         persist_lesson_start_to_supabase(
             run_id=run_id,
             topic=topic,
-            final_run_state=final_run_state,
+            final_run_state=final_run_state_payload,
             selected=selected,
             concept_note=concept_note,
             architect_note=architect_note,

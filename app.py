@@ -28,6 +28,7 @@ from src.agents.tutor_narrative import get_tutor_narrative
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
 from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts
+from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -692,11 +693,16 @@ def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str,
     phase = str(state.get("phase") or "")
     if phase != "awaiting_user_answers" or not topic_id:
         return False
+    if state.get("redo_mode") is True or str(state.get("selection_mode") or "") == "retry":
+        return False
     return topic_status_map(progress_rows).get(topic_id) == "completed"
 
 
 def get_latest_evaluation_run() -> Optional[Path]:
-    return find_latest_run("evaluation_complete")
+    local_run = find_latest_run("evaluation_complete")
+    if local_run is not None:
+        return local_run
+    return sync_latest_evaluation_from_supabase()
 
 
 def get_history_entry_for_run(run_id: str) -> Optional[Dict[str, Any]]:
@@ -980,14 +986,22 @@ def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Op
         st.info("No topics available.")
         return
 
-    topic_options = [row.get("topic_id") for row in progress_rows if row.get("topic_id")]
+    completed_rows = [
+        row for row in progress_rows
+        if row.get("topic_id") and str(row.get("status") or "").strip().lower() == "completed"
+    ]
+    if not completed_rows:
+        st.info("No completed lessons are available for review or redo yet.")
+        return
+
+    topic_options = [row.get("topic_id") for row in completed_rows if row.get("topic_id")]
     default_topic = st.session_state.get("review_topic_id") or (topic_options[0] if topic_options else None)
     if default_topic not in topic_options and topic_options:
         default_topic = topic_options[0]
 
     topic_label_map = {
-        row.get("topic_id"): f"{row.get('topic_id')} · {row.get('title')} · {row.get('status')}"
-        for row in progress_rows
+        row.get("topic_id"): f"{row.get('topic_id')} · {row.get('title')} · completed"
+        for row in completed_rows
         if row.get("topic_id")
     }
     selected_topic_id = st.selectbox(
@@ -998,7 +1012,7 @@ def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Op
     )
     st.session_state.review_topic_id = selected_topic_id
 
-    topic_row = next((row for row in progress_rows if row.get("topic_id") == selected_topic_id), {})
+    topic_row = next((row for row in completed_rows if row.get("topic_id") == selected_topic_id), {})
     status = str(topic_row.get("status") or "")
     topic_reward = get_topic_reward_state(rewards_state, selected_topic_id)
 
@@ -1058,6 +1072,41 @@ def persist_mission_draft_to_supabase(run_state: Dict[str, Any], topic_id: str, 
     except Exception:
         pass
 
+
+
+
+def persist_practice_submission_to_supabase(
+    run_state: Dict[str, Any],
+    topic_id: str,
+    practice_submission: Dict[str, Any],
+    practice_result: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist Code Lab work durably so Streamlit sleep does not wipe it."""
+    try:
+        upsert_artifact(
+            run_id=run_state["run_id"],
+            artifact_type="practice_submission",
+            topic_id=topic_id,
+            payload=practice_submission,
+        )
+        if practice_result is not None:
+            upsert_artifact(
+                run_id=run_state["run_id"],
+                artifact_type="practice_result",
+                topic_id=topic_id,
+                payload=practice_result,
+            )
+        append_event(
+            event_type="practice_submission_saved",
+            run_id=run_state["run_id"],
+            topic_id=topic_id,
+            payload={
+                "exercise_id": practice_submission.get("exercise_id"),
+                "has_result": practice_result is not None,
+            },
+        )
+    except Exception:
+        pass
 
 def render_answer_pressure(question_type: str, answer_text: str) -> None:
     words = len((answer_text or "").split())
@@ -2179,6 +2228,12 @@ rewards_state = load_rewards_state()
 catalog_source, catalog_count = load_topic_catalog_source()
 metrics = compute_overall_metrics(progress_rows, rewards_state)
 
+# Supabase is the system of record. Streamlit Cloud local files are only cache.
+# Rehydrate active/evaluation runs before local run discovery so sleep/redeploy
+# does not make the app forget an in-progress lesson.
+sync_active_run_from_supabase(progress_rows)
+sync_latest_evaluation_from_supabase()
+
 awaiting_run = find_latest_run("awaiting_user_answers")
 stale_awaiting_run = None
 if is_stale_awaiting_run(awaiting_run, progress_rows):
@@ -2276,19 +2331,22 @@ with tabs[0]:
                     render_level_card(row, st.session_state.selected_topic_id, rewards_state)
                     topic_id = row.get("topic_id", "")
                     status = row.get("status", "")
-                    action_cols = st.columns(2)
-                    with action_cols[0]:
-                        if st.button("Review", key=f"review_{topic_id}", use_container_width=True, disabled=not topic_id):
-                            st.session_state.review_topic_id = topic_id
-                            st.info("Open the Review / Redo tab to inspect this topic.")
-                    with action_cols[1]:
-                        redo_disabled = awaiting_run is not None or status != "completed"
-                        if st.button("Redo", key=f"redo_{topic_id}", use_container_width=True, disabled=redo_disabled):
-                            with st.spinner(f"Starting redo attempt for {topic_id}..."):
-                                ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=True)
-                            record_action_result("Start Redo Attempt", ok, output)
-                            if ok:
-                                st.rerun()
+                    if str(status or "").strip().lower() == "completed":
+                        action_cols = st.columns(2)
+                        with action_cols[0]:
+                            if st.button("Review", key=f"review_{topic_id}", use_container_width=True, disabled=not topic_id):
+                                st.session_state.review_topic_id = topic_id
+                                st.info("Open the Review / Redo tab to inspect this completed topic.")
+                        with action_cols[1]:
+                            redo_disabled = awaiting_run is not None
+                            if st.button("Redo", key=f"redo_{topic_id}", use_container_width=True, disabled=redo_disabled):
+                                with st.spinner(f"Starting redo attempt for {topic_id}..."):
+                                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=True)
+                                record_action_result("Start Redo Attempt", ok, output)
+                                if ok:
+                                    st.rerun()
+                    else:
+                        st.caption("Review/Redo appears after completion.")
 
     st.divider()
     st.subheader("Latest Result")
@@ -2455,6 +2513,7 @@ with tabs[1]:
                 if st.button("Run Code Exercise", use_container_width=True):
                     save_answers(practice_submission_path, updated_practice_submission)
                     result = run_code_exercise(practice_exercise, updated_practice_submission)
+                    persist_practice_submission_to_supabase(run_state, topic_id, updated_practice_submission, result)
                     render_practice_result_summary(result)
         else:
             submit_tab_index = 4
@@ -2479,6 +2538,7 @@ with tabs[1]:
                 persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
                 if updated_practice_submission is not None and practice_submission_path is not None:
                     save_answers(practice_submission_path, updated_practice_submission)
+                    persist_practice_submission_to_supabase(run_state, topic_id, updated_practice_submission)
                 with st.spinner("Saving answers, running practical checks, and evaluating mission responses. This finalizes this attempt..."):
                     ok, output = run_module("src.evaluate_lesson")
                 record_action_result("Save + Evaluate", ok, output)

@@ -29,7 +29,8 @@ from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
 from src.utils.rewards import apply_evaluation_rewards
 from src.utils.curriculum_catalog import load_topic_catalog_dicts
-from src.utils.tracker import get_progress_row, unlock_topic, update_topic_status
+from src.utils.tracker import get_progress_row, read_progress_rows, unlock_topic, update_topic_status
+from src.utils.cloud_run_cache import sync_active_run_from_supabase
 from src.utils.validator import build_dataclass
 
 
@@ -498,6 +499,13 @@ def unlock_dependent_topics(topic_catalog: List[Topic], completed_topic_id: str)
 
 
 def main() -> None:
+    # Streamlit Cloud local files are cache. Rehydrate the active run from
+    # Supabase before evaluating so sleep/redeploy does not lose an attempt.
+    try:
+        sync_active_run_from_supabase(read_progress_rows())
+    except Exception:
+        pass
+
     learner_profile = load_yaml(CONFIG_DIR / "learner_profile.yaml")
     scoring_rubric = load_yaml(CONFIG_DIR / "scoring_rubric.yaml")
     topic_catalog = load_topic_catalog()

@@ -125,15 +125,24 @@ ADVANCED_TUTOR_EXPANSIONS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "mlf_019": {
-        "teacher_walkthrough": "Interpretability helps explain model behavior, but it does not prove causality or correctness. A feature importance chart can show which features influenced predictions, not whether the model is safe. Explanations are evidence for review, debugging, governance, and stakeholder trust. They are not a replacement for validation, leakage checks, monitoring, or domain review.",
+        "teacher_walkthrough": (
+            "Interpretability is a model-behavior explanation, not a truth certificate. "
+            "Think of it as a CCTV replay of what the model looked at. It can show that humidity influenced a prediction, "
+            "but it cannot prove humidity physically caused the defect. The actual cause may be a correlated machine setting, "
+            "night shift, seasonal material condition, supplier batch, or sensor drift. The architect move is to treat the chart as an investigation lead, "
+            "then require domain review, data checks, and controlled validation before any process action."
+        ),
         "safe_vs_unsafe": [
-            "Unsafe: treat SHAP or feature importance as proof that the model is right.",
-            "Safe: use explanations to investigate behavior, compare against domain expectations, and decide what additional validation is needed.",
+            "Unsafe: treat SHAP, feature importance, or a local explanation as proof that the model is right or that the feature caused the outcome.",
+            "Safe: use explanations as investigation clues, compare them against domain expectations, check correlated features, and require validation before process changes.",
+            "Unsafe: show explanation charts to business users without caveats or an action policy.",
+            "Safe: label global vs local explanation, store an audit trail, and route process actions through approval.",
         ],
         "mini_checks": [
-            "Does an explanation prove causation?",
-            "Is the explanation global or local?",
-            "What would you do if explanations contradict domain knowledge?",
+            "What exactly did the explanation show: model behavior, one prediction, or average behavior?",
+            "What did it not prove: causality, correctness, safety, or no leakage?",
+            "Which correlated feature, process variable, or sensor condition could be the hidden reason?",
+            "What validation is required before changing the manufacturing process?",
         ],
     },
     "mlf_020": {
@@ -319,6 +328,13 @@ def _teacher_walkthrough(bp: Dict[str, Any], expansion: Dict[str, Any]) -> str:
             "Slow it down: a model can optimize the majority class and still fail the business. The mechanism is not only fewer examples; "
             "it is that the training objective and chosen metric may not value the minority error enough."
         )
+    if "interpretability" in title or "explainability" in title:
+        return (
+            f"{mechanism}\n\n"
+            "Slow it down: an explanation answers 'what the model used', not 'what caused the outcome'. "
+            "Global explanation is the overall pattern. Local explanation is one prediction. Neither proves the physical or business cause. "
+            "Correlated features can distort importance, so the correct next step is validation, not immediate process change."
+        )
     return mechanism
 
 
@@ -341,6 +357,14 @@ def _worked_example(bp: Dict[str, Any], expansion: Dict[str, Any]) -> str:
         return (
             f"{worked}\n\n"
             "Use this pattern: compute what the model catches in the minority class, then explain why aggregate accuracy is not enough."
+        )
+    if "interpretability" in title or "explainability" in title:
+        return (
+            f"{worked}\n\n"
+            "Step 1: conclude only that the model relied on humidity. "
+            "Step 2: do not conclude that humidity caused defects. "
+            "Step 3: inspect correlated factors such as shift, machine setting, supplier batch, season, sensor behavior, and label timing. "
+            "Step 4: approve a process change only after domain review or experiment confirms the mechanism."
         )
     return worked
 

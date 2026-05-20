@@ -23,6 +23,10 @@ def _allow_completed_restart() -> bool:
     return str(os.getenv("ML_OS_ALLOW_RESTART_COMPLETED", "false")).strip().lower() in {"1", "true", "yes", "y"}
 
 
+def _redo_mode() -> bool:
+    return str(os.getenv("ML_OS_REDO_MODE", "false")).strip().lower() in {"1", "true", "yes", "y"}
+
+
 def _read_topic_catalog() -> List[Topic]:
     data = load_topic_catalog_dicts(prefer_supabase=True)
     if not data:
@@ -62,6 +66,13 @@ def _select_requested_topic(
     unlocked = row.get("prerequisites_unlocked", "").lower() == "true"
     status = row.get("status", "")
 
+    is_redo = _redo_mode()
+
+    if is_redo and status != "completed":
+        raise TopicSelectorError(
+            f"Redo is allowed only for completed topics. Requested topic '{requested_topic_id}' has status '{status}'."
+        )
+
     if status == "locked" or not unlocked:
         raise TopicSelectorError(
             f"Requested topic '{requested_topic_id}' is locked and cannot be started yet."
@@ -75,8 +86,11 @@ def _select_requested_topic(
 
     return SelectedTopic(
         selected_topic_id=topic.topic_id,
-        reason=f"Manually selected topic '{topic.topic_id}' with current status '{status}'.",
-        selection_mode="manual_selected",
+        reason=(
+            f"Redo selected completed topic '{topic.topic_id}'."
+            if is_redo else f"Manually selected topic '{topic.topic_id}' with current status '{status}'."
+        ),
+        selection_mode="retry" if is_redo else "manual_selected",
         prerequisite_gap=None,
     )
 

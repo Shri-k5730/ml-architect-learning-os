@@ -55,6 +55,20 @@ SEMANTIC_COVERAGE: Dict[str, List[str]] = {
     "monitoring": ["monitor", "dashboard", "track", "trigger", "alert", "weekly", "monthly"],
     "minority-class failure": ["minority", "defect", "recall", "false negative", "accuracy", "escape", "warranty"],
     "interpretation": ["bad model", "despite high accuracy", "0 recall", "catches none", "quality", "business loss"],
+    "model behavior": ["model behavior", "model leaned", "model relied", "feature influenced", "prediction", "global", "local", "importance"],
+    "not causal proof": ["not causal", "not causality", "does not prove", "not proof", "clue", "correlation", "not cause"],
+    "stakeholder risk": ["stakeholder", "misread", "misinterpret", "process change", "business action", "unsafe action", "trust"],
+    "clue not proof": ["clue", "not proof", "does not prove", "investigate", "validate", "evidence", "domain review"],
+    "domain review": ["domain", "review", "process owner", "quality", "expert", "manufacturing", "approval"],
+    "validation": ["validate", "validation", "experiment", "check", "inspect", "evidence", "data slice", "process evidence"],
+    "causality trap": ["causality", "causal", "cause", "correlation", "wrongly changed", "trap", "convincing chart"],
+    "missing validation": ["without validation", "missing validation", "did not validate", "no experiment", "no review", "domain review"],
+    "governance failure": ["governance", "approval", "audit", "review path", "policy", "owner", "process action"],
+    "global/local": ["global", "local", "overall model", "one prediction", "individual prediction"],
+    "audit trail": ["audit", "stored", "logged", "trace", "record", "explanation history"],
+    "approval path": ["approval", "approve", "sign-off", "review path", "owner", "domain review"],
+    "limits": ["limit", "cannot prove", "does not prove", "not causal", "not correct", "not safe"],
+    "safe use": ["safe", "clue", "investigate", "validate", "review", "caveat", "approval"],
 }
 
 
@@ -333,6 +347,27 @@ def _blueprint_by_type(topic_id: str, question_type: str, question: str, expecte
     if topic_id == "mlf_018" and question_type == "teachback":
         return (
             "I would explain it like this: changing the algorithm before error analysis is like replacing a machine before checking where defects are coming from. A model may fail mainly for one supplier, one shift, or one defect type. If the cause is bad labels, missing night-shift data, or a supplier process change, a new algorithm may not fix it. Error analysis finds the failure pattern first, then points to the right fix: data repair, feature change, threshold review, or targeted retraining."
+        )
+
+    if topic_id == "mlf_019" and question_type == "concept_check":
+        return (
+            "Interpretability explains model behavior: what features or patterns influenced the model globally or for one prediction. It is not the same as causality. If a defect model shows humidity as important, that means the model relied on humidity, not that humidity caused defects. Humidity may correlate with shift, season, machine setting, supplier batch, or sensor drift. The risk is that stakeholders may treat a convincing chart as proof and change the process incorrectly. I would use explanations as investigation evidence, then validate with domain review, data checks, or experiments."
+        )
+    if topic_id == "mlf_019" and question_type == "tiny_hands_on":
+        return (
+            "If humidity is the top feature, I would conclude only that the model used humidity strongly in its prediction logic. I would not conclude that humidity physically causes the defects or that changing humidity will reduce defects. The next step is to inspect correlated variables such as shift, season, machine setting, supplier batch, sensor drift, and label timing. I would ask the quality or process owner to review the explanation and validate it with process evidence or a controlled experiment before approving any operational change."
+        )
+    if topic_id == "mlf_019" and question_type == "failure_diagnosis":
+        return (
+            "The team fell into the causality trap. They treated a feature-importance chart as proof of the real-world cause and changed the process without validation. The evidence to inspect includes whether the explanation was global or local, whether humidity was correlated with shift, machine setting, supplier batch, season, or sensor drift, and whether the model had leakage or unstable correlated features. Prevention requires explanation caveats, domain review, audit trail, and an approval path before any process action based on model explanations."
+        )
+    if topic_id == "mlf_019" and question_type == "architect_decision":
+        return (
+            "I would design explainability governance as a review workflow, not a charting feature. First, separate global explanations from local explanations and store each explanation with model version, data slice, timestamp, prediction, and user action. Second, add a causality warning on every explanation view. Third, require domain review when explanations conflict with process knowledge or are used to justify process change. Fourth, create an approval path owned by ML, quality, and process leads before operational action. The control is an explanation audit trail plus validation evidence before change."
+        )
+    if topic_id == "mlf_019" and question_type == "teachback":
+        return (
+            "I would tell a business stakeholder: a model explanation is like a clue, not a verdict. It can say the model paid attention to humidity when predicting defects, but it cannot prove humidity caused the defects or that changing humidity will fix them. The value is that it helps us ask better questions and investigate faster. The limit is that we still need domain review, data checks, and validation before acting. So explanations improve trust and debugging, but they must not bypass governance."
         )
 
     if question_type == "concept_check":

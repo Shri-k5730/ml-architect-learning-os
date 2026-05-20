@@ -34,6 +34,20 @@ SEMANTIC_COVERAGE: Dict[str, List[str]] = {
     "monitoring": ["monitor", "dashboard", "track", "trigger", "alert", "weekly", "monthly"],
     "minority-class failure": ["minority", "defect", "recall", "false negative", "accuracy", "escape", "warranty"],
     "interpretation": ["bad model", "despite high accuracy", "0 recall", "catches none", "quality", "business loss"],
+    "model behavior": ["model behavior", "model leaned", "model relied", "feature influenced", "prediction", "global", "local", "importance"],
+    "not causal proof": ["not causal", "not causality", "does not prove", "not proof", "clue", "correlation", "not cause"],
+    "stakeholder risk": ["stakeholder", "misread", "misinterpret", "process change", "business action", "unsafe action", "trust"],
+    "clue not proof": ["clue", "not proof", "does not prove", "investigate", "validate", "evidence", "domain review"],
+    "domain review": ["domain", "review", "process owner", "quality", "expert", "manufacturing", "approval"],
+    "validation": ["validate", "validation", "experiment", "check", "inspect", "evidence", "data slice", "process evidence"],
+    "causality trap": ["causality", "causal", "cause", "correlation", "wrongly changed", "trap", "convincing chart"],
+    "missing validation": ["without validation", "missing validation", "did not validate", "no experiment", "no review", "domain review"],
+    "governance failure": ["governance", "approval", "audit", "review path", "policy", "owner", "process action"],
+    "global/local": ["global", "local", "overall model", "one prediction", "individual prediction"],
+    "audit trail": ["audit", "stored", "logged", "trace", "record", "explanation history"],
+    "approval path": ["approval", "approve", "sign-off", "review path", "owner", "domain review"],
+    "limits": ["limit", "cannot prove", "does not prove", "not causal", "not correct", "not safe"],
+    "safe use": ["safe", "clue", "investigate", "validate", "review", "caveat", "approval"],
 }
 
 
