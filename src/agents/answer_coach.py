@@ -37,6 +37,48 @@ def _meaningful_words(text: str) -> List[str]:
     ]
 
 
+
+SEMANTIC_COVERAGE: Dict[str, List[str]] = {
+    "where/why errors": ["where", "why", "failure pocket", "error pattern", "wrong", "mistake", "slices mistakes", "supplier", "shift", "defect type"],
+    "average metric limitation": ["hide", "overall", "average", "accuracy", "one supplier", "one shift", "one defect", "fail badly"],
+    "segment slicing": ["slice", "supplier", "shift", "plant", "station", "product", "defect type", "feature range", "confidence band", "segment"],
+    "evidence": ["inspect", "compare", "confusion matrix", "false negative", "feature distribution", "missing", "label", "sensor", "process", "evidence"],
+    "data/process/label shift": ["process", "material", "measurement", "missing feature", "label", "training", "represented", "feature distribution", "supplier process"],
+    "checks": ["inspect", "check", "compare", "review", "audit", "confusion matrix", "missing-value", "distribution"],
+    "logged predictions": ["log every prediction", "timestamp", "model score", "prediction", "actual label", "confidence", "plant", "line", "station"],
+    "simple explanation": ["like", "explain", "replacing", "checking", "defect", "where", "first", "model is wrong"],
+    "targeted fix": ["targeted", "right action", "better data", "threshold change", "feature improvement", "retraining", "fix backlog"],
+    "business efficiency": ["business", "efficient", "waste", "will not fix", "quality", "without checking", "supplier-specific"],
+    "score-to-action": ["score", "action", "decision", "threshold", "decision point", "business policy"],
+    "missed defects vs extra checks": ["missed defect", "extra inspection", "false negative", "false positive", "inspection", "business loss"],
+    "owner": ["owner", "quality owner", "ml owner", "review", "approval", "responsible"],
+    "monitoring": ["monitor", "dashboard", "track", "trigger", "alert", "weekly", "monthly"],
+    "minority-class failure": ["minority", "defect", "recall", "false negative", "accuracy", "escape", "warranty"],
+    "interpretation": ["bad model", "despite high accuracy", "0 recall", "catches none", "quality", "business loss"],
+}
+
+
+def _contains_any(answer_l: str, tokens: List[str]) -> bool:
+    return any(str(token).lower() in answer_l for token in tokens if str(token).strip())
+
+
+def _focus_is_covered(focus: str, answer_l: str) -> bool:
+    focus_l = _normalize(focus)
+    if not focus_l:
+        return True
+    if focus_l in answer_l:
+        return True
+    for key, tokens in SEMANTIC_COVERAGE.items():
+        if key in focus_l and _contains_any(answer_l, tokens):
+            return True
+    words = _meaningful_words(focus_l)
+    if not words:
+        return True
+    hits = sum(1 for word in words if word in answer_l)
+    required = 1 if len(words) <= 2 else 2
+    return hits >= required
+
+
 def _mentions_question(evaluation: EvaluationResult, question_id: str) -> bool:
     weak_text = " ".join(evaluation.weak_spots or []).lower()
     patterns = [question_id.lower(), question_id.lower().replace("q", "question ")]
@@ -46,16 +88,9 @@ def _mentions_question(evaluation: EvaluationResult, question_id: str) -> bool:
 def _expected_focus_gaps(expected_focus: List[str], answer: str) -> List[str]:
     answer_l = _normalize(answer)
     gaps: List[str] = []
-
     for focus in expected_focus or []:
-        words = _meaningful_words(focus)
-        if not words:
-            continue
-        hits = sum(1 for word in words if word in answer_l)
-        required = 1 if len(words) <= 2 else 2
-        if hits < required:
-            gaps.append(focus)
-
+        if not _focus_is_covered(str(focus), answer_l):
+            gaps.append(str(focus))
     return gaps[:3]
 
 
@@ -102,6 +137,16 @@ def _type_specific_gaps(question_type: str, answer: str) -> List[str]:
     return gaps[:2]
 
 
+def _score_floor(evaluation: EvaluationResult) -> int:
+    scores = evaluation.scores
+    return min(
+        int(scores.conceptual_clarity or 0),
+        int(scores.practical_reasoning or 0),
+        int(scores.architect_reasoning or 0),
+        int(scores.communication or 0),
+    )
+
+
 def _question_quality(
     question_id: str,
     answer: str,
@@ -109,11 +154,21 @@ def _question_quality(
     misconception_hits: List[Dict[str, str]],
     evaluation: EvaluationResult,
 ) -> str:
+    """Align question label with final score quality.
+
+    If the final evaluator gave all dimensions 4+, the coaching layer must not
+    label normal answers WEAK merely because exact expected-focus words differ.
+    """
     answer_len = len((answer or "").strip())
+    floor = _score_floor(evaluation)
     if answer_len < 30:
         return "weak"
     if misconception_hits:
-        return "partial"
+        return "partial" if floor >= 4 else "weak"
+    if floor >= 4:
+        if len(expected_gaps) >= 3:
+            return "partial"
+        return "strong"
     if _mentions_question(evaluation, question_id):
         return "partial"
     if len(expected_gaps) >= 3:
@@ -174,6 +229,7 @@ def _missing_points(
     expected_focus: List[str],
     answer: str,
     question_type: str,
+    question_id: str = "",
 ) -> tuple[List[str], List[Dict[str, str]]]:
     missing: List[str] = []
 
@@ -190,16 +246,11 @@ def _missing_points(
         if issue not in missing:
             missing.append(issue)
 
-    exact_missing, exact_findings = _exact_topic_findings(topic_id, "", question_type, answer)
-    # question_id is not available in this helper signature for backward compatibility;
-    # question_type and topic still catch the major formula/mechanism issues.
+    exact_missing, exact_findings = _exact_topic_findings(topic_id, question_id, question_type, answer)
     for issue in exact_missing:
         if issue not in missing:
             missing.append(issue)
     misconceptions.extend(exact_findings)
-
-    if not missing:
-        missing.append("The answer is directionally correct. To make it stronger, name the exact mechanism, calculation check, or production control for this specific topic.")
 
     return missing[:5], misconceptions[:5]
 
@@ -261,6 +312,27 @@ def _blueprint_by_type(topic_id: str, question_type: str, question: str, expecte
             "I would treat class imbalance as a metric and decision-control problem. First, define the cost of missed defects versus extra inspections. "
             "Second, validate with confusion matrix, minority recall, precision, F1, PR-AUC, and segment checks by defect type or plant. Third, test controls such as class weights, resampling, and threshold tuning. "
             "In production, monitor minority-class recall and false negatives, with an owner reviewing breaches against the agreed threshold."
+        )
+
+    if topic_id == "mlf_018" and question_type == "concept_check":
+        return (
+            "Error analysis is the process of studying where and why a model is wrong instead of trusting one overall metric. Overall accuracy can hide failure pockets: a defect model may look strong overall but fail for one supplier, shift, station, or defect type. I would slice false positives and false negatives by segment, confidence band, feature range, and label source. The goal is to identify whether the failure is caused by data coverage, label quality, threshold choice, feature drift, or model limitation, then choose a targeted fix."
+        )
+    if topic_id == "mlf_018" and question_type == "tiny_hands_on":
+        return (
+            "Overall recall of 80% is not enough because night-shift recall is only 35%, which is a segment-level failure. I would inspect night-shift false negatives first and compare them with day-shift false negatives. The evidence should include confusion matrix slices by shift, feature distributions, missing-value rates, sensor noise, label delay, and process differences. A practical control would be shift-level recall monitoring with a trigger, such as opening a quality review if night-shift recall falls below the agreed threshold."
+        )
+    if topic_id == "mlf_018" and question_type == "failure_diagnosis":
+        return (
+            "The symptom is supplier-specific failure, not necessarily full model failure. Possible causes include supplier process change, material difference, measurement shift, label inconsistency, missing supplier-specific features, or weak training coverage for that supplier. I would inspect confusion matrix slices by supplier, supplier-level false negatives, feature distribution changes, missing values, label audit results, and recent supplier process changes. The fix should target the evidence: data enrichment, label correction, feature update, threshold review, or supplier-specific monitoring."
+        )
+    if topic_id == "mlf_018" and question_type == "architect_decision":
+        return (
+            "I would design error analysis as a recurring debugging workflow. Log every prediction with timestamp, plant, line, station, supplier, product type, model score, prediction, actual label, and confidence. Build segment dashboards and confusion matrix slices for false positives and false negatives by supplier, shift, defect type, and feature range. Review error samples with ML, quality, and process owners. Repeated patterns become a fix backlog: label audit, data correction, feature change, threshold review, or retraining only when evidence supports it."
+        )
+    if topic_id == "mlf_018" and question_type == "teachback":
+        return (
+            "I would explain it like this: changing the algorithm before error analysis is like replacing a machine before checking where defects are coming from. A model may fail mainly for one supplier, one shift, or one defect type. If the cause is bad labels, missing night-shift data, or a supplier process change, a new algorithm may not fix it. Error analysis finds the failure pattern first, then points to the right fix: data repair, feature change, threshold review, or targeted retraining."
         )
 
     if question_type == "concept_check":
@@ -332,6 +404,18 @@ def _why_better(question_type: str) -> str:
     return "It defines the concept precisely and connects it to model behavior rather than vague system language."
 
 
+def _five_star_upgrade(question_type: str, topic_id: str) -> str:
+    if question_type == "architect_decision":
+        return "To move from 4 to 5, add owner, review cadence, metric threshold, breach trigger, and operational response."
+    if question_type == "failure_diagnosis":
+        return "To move from 4 to 5, add the exact evidence you would inspect and how each evidence path changes the fix."
+    if question_type == "tiny_hands_on":
+        return "To move from 4 to 5, connect the number or segment comparison to a concrete decision trigger."
+    if question_type == "teachback":
+        return "To move from 4 to 5, make the analogy simpler and close with the business efficiency or risk consequence."
+    return "To move from 4 to 5, add one precise mechanism, one concrete example, and one operational control."
+
+
 def _architect_upgrade(question_type: str, architect_note: ArchitectNote) -> str:
     if question_type == "architect_decision":
         return "Upgrade by naming the exact controls: validation gate, metric threshold, monitoring signal, fallback policy, retraining trigger, and response owner."
@@ -367,8 +451,12 @@ def generate_answer_coaching(
             expected_focus=question.expected_focus,
             answer=answer,
             question_type=question.type,
+            question_id=question.question_id,
         )
         quality = _question_quality(question.question_id, answer, missing, misconception_hits, evaluation)
+        display_missing = missing
+        if _score_floor(evaluation) >= 4 and quality == "strong":
+            display_missing = [_five_star_upgrade(question.type, concept_note.topic_id)]
 
         coaching.append(
             {
@@ -376,7 +464,8 @@ def generate_answer_coaching(
                 "question": question.question,
                 "your_answer": answer,
                 "answer_quality": quality,
-                "what_was_missing": missing,
+                "what_was_missing": display_missing,
+                "what_kept_from_5": _five_star_upgrade(question.type, concept_note.topic_id),
                 "evidence_bound_findings": misconception_hits,
                 "better_answer": _better_answer(
                     topic_id=concept_note.topic_id,
@@ -393,6 +482,6 @@ def generate_answer_coaching(
 
     return {
         "topic_id": concept_note.topic_id,
-        "mode": "topic_grounded_evidence_bound",
+        "mode": "score_aligned_semantic_coaching_v2",
         "coaching": coaching,
     }
