@@ -24,6 +24,7 @@ ARTIFACT_LOCAL_FILES: Dict[str, str] = {
     "practice_coaching": "practice_coaching.json",
     "draft_verification": "draft_verification.json",
     "lesson_blueprint": "lesson_blueprint.json",
+    "capstone_deliverables": "capstone_deliverables.json",
 }
 
 
@@ -80,6 +81,7 @@ def _default_run_state(run_row: Dict[str, Any], artifacts: Dict[str, Any]) -> Di
             "practice_submission": f"assessments/answers/{run_id}_practice_submission.json" if practice_submission else None,
             "practice_result": f"runs/{run_id}/practice_result.json" if artifacts.get("practice_result") else None,
             "practice_coaching": f"runs/{run_id}/practice_coaching.json" if artifacts.get("practice_coaching") else None,
+            "capstone_deliverables": f"runs/{run_id}/capstone_deliverables.json" if artifacts.get("capstone_deliverables") else None,
         },
         "scores": {},
         "next_action": "await_user_answers" if phase == "awaiting_user_answers" else "next_topic",

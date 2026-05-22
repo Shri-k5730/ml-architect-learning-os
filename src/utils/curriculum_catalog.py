@@ -93,7 +93,12 @@ def _topic_to_catalog_row(topic: Dict[str, Any], sequence_no: int) -> Dict[str, 
     topic = _normalize_topic_dict(topic)
     prerequisites = topic.get("prerequisites", [])
     topic_id = topic["topic_id"]
-    item_type = "checkpoint" if topic_id.startswith("checkpoint_") else "lesson"
+    if topic_id.startswith("checkpoint_"):
+        item_type = "checkpoint"
+    elif topic_id.startswith("capstone_"):
+        item_type = "capstone"
+    else:
+        item_type = "lesson"
     module_id = _infer_module_id(topic_id, sequence_no, item_type)
 
     return {
@@ -113,8 +118,12 @@ def _topic_to_catalog_row(topic: Dict[str, Any], sequence_no: int) -> Dict[str, 
 
 
 def _infer_module_id(topic_id: str, sequence_no: int, item_type: str) -> str:
-    if item_type == "checkpoint":
+    if topic_id == "checkpoint_ml_foundations_001":
         return "module_001_checkpoint"
+    if topic_id == "checkpoint_ml_architect_001":
+        return "module_003_checkpoint"
+    if item_type == "capstone":
+        return "module_004_capstone"
     if topic_id.startswith("mlf_"):
         try:
             number = int(topic_id.split("_")[1])
@@ -124,6 +133,8 @@ def _infer_module_id(topic_id: str, sequence_no: int, item_type: str) -> str:
             return "module_001_ml_foundations"
         if number <= 20:
             return "module_002_advanced_ml"
+        if number <= 25:
+            return "module_003_ml_architect_completion"
     return "module_999_uncategorized"
 
 

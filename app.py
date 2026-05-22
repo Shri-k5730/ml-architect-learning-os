@@ -848,6 +848,7 @@ def _artifact_payload_map_from_local(run_id: str) -> Dict[str, Any]:
         "evaluation": run_dir / "evaluation.json",
         "answer_coaching": run_dir / "answer_coaching.json",
         "practice_result": run_dir / "practice_result.json",
+        "capstone_deliverables": run_dir / "capstone_deliverables.json",
     }
     for artifact_type, file_path in local_files.items():
         if file_path.exists():
@@ -969,6 +970,20 @@ def render_review_payloads(payloads: Dict[str, Any]) -> None:
                         st.write(str(upgrade))
 
     st.divider()
+    capstone_pack = payloads.get("capstone_deliverables") or {}
+    if capstone_pack:
+        st.divider()
+        st.markdown("### Capstone Artifact Pack")
+        st.caption(
+            f"Sections completed: {capstone_pack.get('sections_completed', 0)}/{capstone_pack.get('sections_required', 5)}"
+        )
+        for section_name, section_text in (capstone_pack.get("sections") or {}).items():
+            with st.expander(section_name.replace("_", " ").title(), expanded=False):
+                st.write(section_text or "-")
+        st.markdown("**Required deliverables represented by this pack**")
+        for artifact in capstone_pack.get("required_artifacts", []) or []:
+            st.markdown(f"- {artifact}")
+
     with st.expander("Lesson artifacts", expanded=False):
         if concept_note:
             st.markdown("**Concept note**")
@@ -1843,6 +1858,21 @@ def render_tutor_narrative_panel(topic_id: str) -> bool:
                     st.markdown("**Answer shape**")
                     st.success(answer_shape)
 
+                not_required = item.get("not_required", "")
+                if not_required:
+                    st.markdown("**Not required unless explicitly asked**")
+                    st.caption(not_required)
+
+                unsafe_leap = item.get("unsafe_leap", "")
+                if unsafe_leap:
+                    st.markdown("**Unsafe conclusion to avoid**")
+                    st.warning(unsafe_leap)
+
+                parallel_example = item.get("parallel_example", "")
+                if parallel_example:
+                    st.markdown("**Worked parallel example**")
+                    st.info(parallel_example)
+
                 avoid = item.get("avoid", "")
                 if avoid:
                     st.markdown("**Do not waste words on**")
@@ -1914,6 +1944,19 @@ def render_mission_bridge(booster: Dict[str, Any], assessment_doc: Dict[str, Any
                 st.markdown("**Evaluator focus**")
                 for item in expected[:4]:
                     st.markdown(f"- {item}")
+            required = bridge.get("required_demonstration", []) or []
+            if required:
+                st.markdown("**Required demonstration**")
+                for point in required:
+                    st.markdown(f"- {point}")
+            not_required = bridge.get("not_required", "")
+            if not_required:
+                st.markdown("**Not required**")
+                st.caption(not_required)
+            unsafe_leap = bridge.get("unsafe_leap", "")
+            if unsafe_leap:
+                st.markdown("**Unsafe conclusion to avoid**")
+                st.warning(unsafe_leap)
 
 
 def run_draft_verification_action(
@@ -2318,7 +2361,7 @@ tabs = st.tabs(
 # -----------------------------
 with tabs[0]:
     st.subheader("Level Map")
-    st.caption("V1 flow is linear: Start Next Lesson → Current Level → Save + Evaluate. The cards are progress indicators, not launch buttons.")
+    st.caption("V2 flow is linear: lessons → gated checkpoints → capstone. Complete the active item to unlock the next one; completed cards support Review/Redo only.")
 
     if not progress_rows:
         st.warning("No progress tracker found.")

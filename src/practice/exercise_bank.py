@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
+from src.practice.v2_exercise_bank import V2_PRACTICE_EXERCISES
+
 
 PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
     "mlf_009": {
@@ -180,6 +182,10 @@ PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
         ),
     },
 }
+
+# V2 adds practical work for the completion block, architect checkpoint, and capstone.
+PRACTICE_EXERCISES.update(V2_PRACTICE_EXERCISES)
+
 
 
 def get_exercise_for_topic(topic_id: str) -> Optional[Dict[str, Any]]:

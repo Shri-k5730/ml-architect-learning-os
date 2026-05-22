@@ -69,6 +69,51 @@ SEMANTIC_COVERAGE: Dict[str, List[str]] = {
     "approval path": ["approval", "approve", "sign-off", "review path", "owner", "domain review"],
     "limits": ["limit", "cannot prove", "does not prove", "not causal", "not correct", "not safe"],
     "safe use": ["safe", "clue", "investigate", "validate", "review", "caveat", "approval"],
+    "deployment boundary": ["deployment", "production", "future", "new line", "unseen", "boundary"],
+    "time or group leakage": ["time", "temporal", "future", "group", "machine", "line", "asset", "leak"],
+    "group leakage": ["group", "machine", "line", "asset", "entity", "overlap", "leak"],
+    "honest validation": ["honest", "valid", "validation", "realistic", "holdout", "test"],
+    "time cutoff": ["time", "temporal", "future", "month", "cutoff"],
+    "line grouping": ["line", "group", "plant", "machine", "asset"],
+    "split policy": ["split", "holdout", "fold", "time", "group", "policy"],
+    "test-set isolation": ["test", "locked", "untouched", "isolate", "final"],
+    "approval evidence": ["approval", "evidence", "report", "record", "audit"],
+    "trustworthy estimate": ["trust", "honest", "estimate", "realistic", "valid"],
+    "selection overfitting": ["overfit", "selection", "trial", "search", "validation"],
+    "locked test": ["locked", "untouched", "final test", "holdout", "test set"],
+    "search discipline": ["budget", "search", "trial", "registry", "record"],
+    "trial evidence": ["trial", "experiment", "registry", "record", "evidence"],
+    "operating point": ["threshold", "operating point", "decision", "score"],
+    "alert workload": ["alert", "inspection", "workload", "capacity", "false positive"],
+    "threshold selection": ["threshold", "select", "recall", "precision", "cost"],
+    "operational adoption": ["operator", "operations", "use", "adoption", "alert"],
+    "calibration": ["calibrat", "probability", "observed", "brier", "reliability"],
+    "probability caution": ["probability", "confidence", "calibrat", "observed", "risk score"],
+    "calibration drift": ["calibrat", "drift", "supplier", "population", "shift"],
+    "holdout": ["holdout", "validation", "test", "unseen", "locked"],
+    "three distinctions": ["input", "label", "sample", "quality", "bias"],
+    "label quality": ["label", "annotat", "inspector", "disagree", "agreement"],
+    "sampling bias": ["sample", "sampling", "selection", "coverage", "represented", "bias"],
+    "coverage gap": ["coverage", "underrepresent", "supplier", "segment", "missing"],
+    "label protocol": ["label", "protocol", "audit", "inspector", "agreement"],
+    "release gate": ["gate", "release", "approve", "block", "validation"],
+    "integrated reasoning": ["validation", "threshold", "calibrat", "quality", "monitor", "decision"],
+    "decision evidence": ["decision", "evidence", "approve", "reject", "condition"],
+    "rare-event evidence": ["rare", "defect", "precision", "recall", "pr-auc", "alert"],
+    "evidence pack": ["evidence", "report", "record", "model card", "plan", "pack"],
+    "triggers": ["trigger", "threshold", "alert", "breach", "drift"],
+    "fallback": ["fallback", "manual", "review", "escalat", "stop"],
+    "problem framing": ["problem", "target", "scope", "prediction", "cost"],
+    "target timing": ["target", "timing", "prediction", "before", "available"],
+    "cost of errors": ["cost", "false negative", "false positive", "missed", "alert"],
+    "data profile": ["data", "profile", "missing", "quality", "distribution"],
+    "metrics": ["metric", "precision", "recall", "auc", "f1"],
+    "segments": ["segment", "supplier", "shift", "plant", "line", "defect"],
+    "release block": ["block", "reject", "release", "stop", "gate"],
+    "retraining": ["retrain", "trigger", "validation", "release"],
+    "recommendation": ["recommend", "approve", "reject", "deploy", "conditional"],
+    "model card": ["model card", "model", "limitation", "metric", "scope"],
+    "adr": ["adr", "architecture decision", "decision record", "rationale"],
 }
 
 
@@ -131,18 +176,22 @@ def _topic_misconceptions(topic_id: str, answer: str) -> List[Dict[str, str]]:
     return findings[:3]
 
 
-def _type_specific_gaps(question_type: str, answer: str) -> List[str]:
+def _type_specific_gaps(question_type: str, answer: str, question: str = "", topic_id: str = "") -> List[str]:
     answer_l = _normalize(answer)
+    question_l = _normalize(question)
     gaps: List[str] = []
 
     if question_type == "tiny_hands_on":
-        if not any(token in answer_l for token in ["compare", "calculate", "metric", "rmse", "mae", "r2", "r²", "precision", "recall", "confusion", "train", "validation"]):
-            gaps.append("Add a concrete metric, calculation, or train-vs-validation comparison.")
+        numeric_task = any(ch.isdigit() for ch in question_l) or any(token in question_l for token in ["calculate", "precision", "recall", "threshold", "score", "auc"])
+        if numeric_task and not any(token in answer_l for token in ["compare", "calculate", "metric", "rmse", "mae", "r2", "r²", "precision", "recall", "confusion", "train", "validation"]):
+            gaps.append("Use the provided value or calculation, then state the decision implication.")
+        elif not numeric_task and not any(token in answer_l for token in ["conclude", "does not", "not mean", "not proof", "validate", "inspect", "check", "review", "evidence"]):
+            gaps.append("State the valid conclusion, invalid conclusion, and validation action for this scenario.")
     elif question_type == "failure_diagnosis":
         if not any(token in answer_l for token in ["cause", "because", "mechanism", "feature", "pipeline", "training", "distribution", "drift", "underfit", "overfit"]):
             gaps.append("Name the failure mechanism, not only the symptom.")
     elif question_type == "architect_decision":
-        if not any(token in answer_l for token in ["monitor", "threshold", "fallback", "alert", "validation", "drift", "guardrail", "trigger", "owner"]):
+        if topic_id != "mlf_019" and not any(token in answer_l for token in ["monitor", "threshold", "fallback", "alert", "validation", "drift", "guardrail", "trigger", "owner"]):
             gaps.append("Name concrete controls such as monitoring, thresholds, fallback, validation gates, or retraining triggers.")
     elif question_type == "teachback":
         if not any(token in answer_l for token in ["manufacturing", "defect", "quality", "line", "stakeholder", "business", "production"]):
@@ -236,6 +285,34 @@ def _exact_topic_findings(topic_id: str, question_id: str, question_type: str, a
                     "State the scaler was fitted on full data; validation, test, and production should only be transformed with the train-fitted scaler.",
                 )
 
+    if topic_id == "mlf_019":
+        if question_id == "q2" or question_type == "tiny_hands_on":
+            if any(phrase in answer_l for phrase in ["should be available in the feature set", "should be available in production", "must be available in production", "retain humidity", "keep humidity"]):
+                add(
+                    "humidity feature should be available in production",
+                    "High feature importance does not prove that humidity is a safe or mandatory production feature.",
+                    "Conclude only that the model relied on humidity; check availability, leakage, proxy risk, segment stability and domain evidence before retaining or acting on it.",
+                )
+        if question_id == "q4" or question_type == "architect_decision":
+            if "global explanation on the overall model performance" in answer_l:
+                add(
+                    "global explanation on the overall model performance",
+                    "Global explanations describe broad model behaviour, not performance metrics.",
+                    "Use global explanations for behaviour review; measure performance separately through recall, precision, calibration or error slices.",
+                )
+            if not ("model version" in answer_l and sum(1 for token in ["timestamp", "data slice", "input context", "prediction", "reviewer", "decision"] if token in answer_l) >= 2):
+                add(
+                    "audit trail without stored decision context",
+                    "The taught audit trail is incomplete without model/version and decision context.",
+                    "State that each explanation decision records model version, input/data slice, prediction, explanation, timestamp, reviewer and resulting decision.",
+                )
+            if not (any(token in answer_l for token in ["ml owner", "quality", "process owner", "process lead"]) and any(token in answer_l for token in ["approve", "approval", "sign-off"])):
+                add(
+                    "approval without named owners",
+                    "The taught governance chain requires named ML, quality and process ownership before operational action.",
+                    "Name who reviews evidence, who approves a process change, and what outcome is monitored after action.",
+                )
+
     return missing[:4], findings[:4]
 
 def _missing_points(
@@ -244,13 +321,14 @@ def _missing_points(
     answer: str,
     question_type: str,
     question_id: str = "",
+    question: str = "",
 ) -> tuple[List[str], List[Dict[str, str]]]:
     missing: List[str] = []
 
     for gap in _expected_focus_gaps(expected_focus, answer):
         if gap not in missing:
             missing.append(gap)
-    for gap in _type_specific_gaps(question_type, answer):
+    for gap in _type_specific_gaps(question_type, answer, question, topic_id):
         if gap not in missing:
             missing.append(gap)
 
@@ -440,6 +518,10 @@ def _why_better(question_type: str) -> str:
 
 
 def _five_star_upgrade(question_type: str, topic_id: str) -> str:
+    if topic_id == "mlf_019" and question_type == "tiny_hands_on":
+        return "To move from 4 to 5, state the valid conclusion, reject the causal/feature-retention leap, and name reliability, leakage/proxy-risk and domain-validation checks."
+    if topic_id == "mlf_019" and question_type == "architect_decision":
+        return "To move from 4 to 5, show the taught governance chain: trigger, logged evidence, ML/quality/process owner, approval action, and post-change monitoring."
     if question_type == "architect_decision":
         return "To move from 4 to 5, add owner, review cadence, metric threshold, breach trigger, and operational response."
     if question_type == "failure_diagnosis":
@@ -452,6 +534,10 @@ def _five_star_upgrade(question_type: str, topic_id: str) -> str:
 
 
 def _architect_upgrade(question_type: str, architect_note: ArchitectNote) -> str:
+    if architect_note.topic_id == "mlf_019" and question_type == "tiny_hands_on":
+        return "Upgrade by checking inference-time availability, leakage, proxy risk, stability across segments and domain evidence before trusting humidity operationally."
+    if architect_note.topic_id == "mlf_019" and question_type == "architect_decision":
+        return "Upgrade by implementing the taught chain: trigger, explanation record, evidence review, named approvers, approved action and outcome monitoring."
     if question_type == "architect_decision":
         return "Upgrade by naming the exact controls: validation gate, metric threshold, monitoring signal, fallback policy, retraining trigger, and response owner."
     if question_type == "failure_diagnosis":
@@ -487,6 +573,7 @@ def generate_answer_coaching(
             answer=answer,
             question_type=question.type,
             question_id=question.question_id,
+            question=question.question,
         )
         quality = _question_quality(question.question_id, answer, missing, misconception_hits, evaluation)
         display_missing = missing
@@ -517,6 +604,6 @@ def generate_answer_coaching(
 
     return {
         "topic_id": concept_note.topic_id,
-        "mode": "score_aligned_semantic_coaching_v2",
+        "mode": "contract_aligned_semantic_coaching_v3",
         "coaching": coaching,
     }

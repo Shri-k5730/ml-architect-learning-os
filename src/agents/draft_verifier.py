@@ -48,6 +48,51 @@ SEMANTIC_COVERAGE: Dict[str, List[str]] = {
     "approval path": ["approval", "approve", "sign-off", "review path", "owner", "domain review"],
     "limits": ["limit", "cannot prove", "does not prove", "not causal", "not correct", "not safe"],
     "safe use": ["safe", "clue", "investigate", "validate", "review", "caveat", "approval"],
+    "deployment boundary": ["deployment", "production", "future", "new line", "unseen", "boundary"],
+    "time or group leakage": ["time", "temporal", "future", "group", "machine", "line", "asset", "leak"],
+    "group leakage": ["group", "machine", "line", "asset", "entity", "overlap", "leak"],
+    "honest validation": ["honest", "valid", "validation", "realistic", "holdout", "test"],
+    "time cutoff": ["time", "temporal", "future", "month", "cutoff"],
+    "line grouping": ["line", "group", "plant", "machine", "asset"],
+    "split policy": ["split", "holdout", "fold", "time", "group", "policy"],
+    "test-set isolation": ["test", "locked", "untouched", "isolate", "final"],
+    "approval evidence": ["approval", "evidence", "report", "record", "audit"],
+    "trustworthy estimate": ["trust", "honest", "estimate", "realistic", "valid"],
+    "selection overfitting": ["overfit", "selection", "trial", "search", "validation"],
+    "locked test": ["locked", "untouched", "final test", "holdout", "test set"],
+    "search discipline": ["budget", "search", "trial", "registry", "record"],
+    "trial evidence": ["trial", "experiment", "registry", "record", "evidence"],
+    "operating point": ["threshold", "operating point", "decision", "score"],
+    "alert workload": ["alert", "inspection", "workload", "capacity", "false positive"],
+    "threshold selection": ["threshold", "select", "recall", "precision", "cost"],
+    "operational adoption": ["operator", "operations", "use", "adoption", "alert"],
+    "calibration": ["calibrat", "probability", "observed", "brier", "reliability"],
+    "probability caution": ["probability", "confidence", "calibrat", "observed", "risk score"],
+    "calibration drift": ["calibrat", "drift", "supplier", "population", "shift"],
+    "holdout": ["holdout", "validation", "test", "unseen", "locked"],
+    "three distinctions": ["input", "label", "sample", "quality", "bias"],
+    "label quality": ["label", "annotat", "inspector", "disagree", "agreement"],
+    "sampling bias": ["sample", "sampling", "selection", "coverage", "represented", "bias"],
+    "coverage gap": ["coverage", "underrepresent", "supplier", "segment", "missing"],
+    "label protocol": ["label", "protocol", "audit", "inspector", "agreement"],
+    "release gate": ["gate", "release", "approve", "block", "validation"],
+    "integrated reasoning": ["validation", "threshold", "calibrat", "quality", "monitor", "decision"],
+    "decision evidence": ["decision", "evidence", "approve", "reject", "condition"],
+    "rare-event evidence": ["rare", "defect", "precision", "recall", "pr-auc", "alert"],
+    "evidence pack": ["evidence", "report", "record", "model card", "plan", "pack"],
+    "triggers": ["trigger", "threshold", "alert", "breach", "drift"],
+    "fallback": ["fallback", "manual", "review", "escalat", "stop"],
+    "problem framing": ["problem", "target", "scope", "prediction", "cost"],
+    "target timing": ["target", "timing", "prediction", "before", "available"],
+    "cost of errors": ["cost", "false negative", "false positive", "missed", "alert"],
+    "data profile": ["data", "profile", "missing", "quality", "distribution"],
+    "metrics": ["metric", "precision", "recall", "auc", "f1"],
+    "segments": ["segment", "supplier", "shift", "plant", "line", "defect"],
+    "release block": ["block", "reject", "release", "stop", "gate"],
+    "retraining": ["retrain", "trigger", "validation", "release"],
+    "recommendation": ["recommend", "approve", "reject", "deploy", "conditional"],
+    "model card": ["model card", "model", "limitation", "metric", "scope"],
+    "adr": ["adr", "architecture decision", "decision record", "rationale"],
 }
 
 
@@ -107,7 +152,51 @@ def _profile_gap(topic_id: str, answer: str) -> List[Dict[str, str]]:
     return findings[:2]
 
 
-def _type_gap(question_type: str, answer: str) -> List[str]:
+def _contract_findings(topic_id: str, question_id: str, answer: str) -> List[Dict[str, str]]:
+    """Detect unsafe inferences explicitly taught in the lesson contract."""
+    answer_l = _normalize(answer)
+    findings: List[Dict[str, str]] = []
+    if topic_id == "mlf_019" and question_id == "q2":
+        unsafe_feature_claim = any(
+            phrase in answer_l
+            for phrase in [
+                "should be available in the feature set",
+                "should be available in production",
+                "must be available in production",
+                "retain humidity",
+                "keep humidity",
+            ]
+        )
+        if unsafe_feature_claim:
+            findings.append({
+                "evidence": "humidity feature should be available in production",
+                "issue": "High feature importance does not by itself justify requiring humidity in production.",
+                "correction": "Conclude only that the model relied on humidity. Before retaining or acting on it, check inference-time availability, leakage, proxy risk, segment stability and domain evidence.",
+                "severity": "blocking",
+            })
+    if topic_id == "mlf_019" and question_id == "q4" and "global explanation on the overall model performance" in answer_l:
+        findings.append({
+            "evidence": "global explanation on the overall model performance",
+            "issue": "A global explanation summarises aggregate model behaviour; it is not a model-performance metric.",
+            "correction": "Separate behaviour explanation from performance monitoring metrics such as recall, precision or error slices.",
+            "severity": "blocking",
+        })
+    return findings
+
+
+def _contract_requirement_gaps(topic_id: str, question_id: str, answer: str) -> List[str]:
+    """Check only requirements shown to the learner in the visible authored contract."""
+    answer_l = _normalize(answer)
+    gaps: List[str] = []
+    if topic_id == "mlf_019" and question_id == "q4":
+        if not ("model version" in answer_l and sum(1 for token in ["timestamp", "data slice", "input context", "prediction", "reviewer", "decision"] if token in answer_l) >= 2):
+            gaps.append("The taught audit trail needs stored decision context: model version, input/data slice, prediction, explanation, reviewer and decision.")
+        if not (any(token in answer_l for token in ["ml owner", "quality", "process owner", "process lead"]) and any(token in answer_l for token in ["approve", "approval", "sign-off"])):
+            gaps.append("The taught governance chain needs named ML/quality/process ownership and approval before process action.")
+    return gaps[:2]
+
+
+def _type_gap(question_type: str, answer: str, question: str = "") -> List[str]:
     answer_l = _normalize(answer)
     gaps: List[str] = []
     word_count = len(answer.split())
@@ -118,8 +207,13 @@ def _type_gap(question_type: str, answer: str) -> List[str]:
         gaps.append("Tighten the answer. This question needs clarity, not an essay.")
 
     if question_type == "tiny_hands_on":
-        if not any(token in answer_l for token in ["metric", "precision", "recall", "confusion", "calculate", "compare", "inspect", "false negative", "feature distribution", "segment"]):
-            gaps.append("Use the number or scenario first, then interpret it.")
+        question_l = _normalize(question)
+        numeric_task = any(ch.isdigit() for ch in question_l) or any(token in question_l for token in ["calculate", "precision", "recall", "threshold", "score", "auc"])
+        if numeric_task:
+            if not any(token in answer_l for token in ["metric", "precision", "recall", "confusion", "calculate", "compare", "inspect", "false negative", "feature distribution", "segment"]):
+                gaps.append("Use the number or scenario first, then interpret it.")
+        elif not any(token in answer_l for token in ["conclude", "does not", "not mean", "not proof", "validate", "inspect", "check", "review", "evidence"]):
+            gaps.append("State the valid conclusion, the invalid conclusion, and the safe next validation action.")
     if question_type == "failure_diagnosis":
         if not any(token in answer_l for token in ["cause", "because", "mechanism", "evidence", "inspect", "check", "distribution", "label", "feature", "threshold", "segment"]):
             gaps.append("Separate symptom, likely cause, evidence to inspect, and prevention.")
@@ -142,14 +236,16 @@ def _serious_technical_hints(writing_assist: Dict[str, Any]) -> List[str]:
     return [str(hint) for hint in hints if str(hint).strip()][:3]
 
 
-def _readiness_score(answer: str, gap_count: int, misconception_count: int, serious_hint_count: int) -> int:
+def _readiness_score(answer: str, gap_count: int, misconception_count: int, serious_hint_count: int, blocking_count: int = 0) -> int:
     word_count = len((answer or "").split())
     if word_count < 20:
         return 1
+    if blocking_count:
+        return 3 if word_count >= 40 else 2
     if misconception_count >= 2 or serious_hint_count >= 2:
         return 2
-    if misconception_count == 1 and gap_count >= 1:
-        return 2
+    if misconception_count == 1:
+        return 3
     if gap_count >= 3:
         return 2
     if gap_count == 2:
@@ -201,18 +297,20 @@ def verify_draft_answers(
     for question in assessment.questions:
         answer = str(by_question.get(question.question_id, {}).get("answer", "")).strip()
         expected_gaps = _coverage_gap(question.expected_focus, answer)
-        concept_findings = _profile_gap(concept_note.topic_id, answer)
-        type_gaps = _type_gap(question.type, answer)
+        concept_findings = [*_profile_gap(concept_note.topic_id, answer), *_contract_findings(concept_note.topic_id, question.question_id, answer)]
+        type_gaps = _type_gap(question.type, answer, question.question)
+        contract_gaps = _contract_requirement_gaps(concept_note.topic_id, question.question_id, answer)
         writing_assist = analyze_answer_text(answer, question.type)
         serious_hints = _serious_technical_hints(writing_assist)
 
         all_gaps: List[str] = []
-        for gap in [*expected_gaps, *type_gaps]:
+        for gap in [*expected_gaps, *type_gaps, *contract_gaps]:
             if gap not in all_gaps:
                 all_gaps.append(gap)
 
         # Do not count spelling suggestions as readiness blockers. They are language noise.
-        score = _readiness_score(answer, len(all_gaps), len(concept_findings), len(serious_hints))
+        blocking_count = sum(1 for finding in concept_findings if finding.get("severity") == "blocking")
+        score = _readiness_score(answer, len(all_gaps), len(concept_findings), len(serious_hints), blocking_count)
         items.append(
             {
                 "question_id": question.question_id,

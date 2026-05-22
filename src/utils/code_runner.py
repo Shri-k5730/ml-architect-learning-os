@@ -25,6 +25,8 @@ SAFE_BUILTINS = {
     "min": min,
     "range": range,
     "round": round,
+    "sorted": sorted,
+    "set": set,
     "sum": sum,
     "tuple": tuple,
     "zip": zip,
@@ -187,6 +189,7 @@ def _run_one_test(fn: Any, test: Dict[str, Any], timeout_seconds: int) -> Dict[s
     args = test.get("args", [])
     kwargs = test.get("kwargs", {})
     expected = test.get("expected")
+    expected_error = str(test.get("expected_error") or "").strip()
 
     if not isinstance(args, list):
         args = [args]
@@ -195,19 +198,27 @@ def _run_one_test(fn: Any, test: Dict[str, Any], timeout_seconds: int) -> Dict[s
 
     try:
         actual = _run_with_timeout(lambda: fn(*args, **kwargs), timeout_seconds)
-        passed = _is_expected(actual, expected)
-        error = "" if passed else f"Expected {expected!r}, got {actual!r}."
+        if expected_error:
+            passed = False
+            error = f"Expected {expected_error} to be raised, got output {actual!r}."
+        else:
+            passed = _is_expected(actual, expected)
+            error = "" if passed else f"Expected {expected!r}, got {actual!r}."
     except Exception as exc:
         actual = None
-        passed = False
-        error = str(exc)
+        if expected_error and exc.__class__.__name__ == expected_error:
+            passed = True
+            error = ""
+        else:
+            passed = False
+            error = str(exc)
 
     failure_category = test.get("concept_tag") or _safe_error_category(error)
 
     return {
         "name": test.get("name", "unnamed_test"),
         "passed": passed,
-        "expected": expected,
+        "expected": expected_error or expected,
         "actual": actual,
         "error": error,
         "reason": test.get("reason", ""),
@@ -260,19 +271,35 @@ def _diagnostics_from_results(visible_results: List[Dict[str, Any]], hidden_resu
     }
 
 
-def _interpretation_score(interpretation: str, expected_focus: List[str]) -> Dict[str, Any]:
+def _interpretation_score(
+    interpretation: str,
+    expected_focus: List[str],
+    configured_groups: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     text = (interpretation or "").strip()
     lowered = text.lower()
     hits: List[str] = []
     missing: List[str] = []
 
-    keyword_groups: List[Tuple[str, List[str]]] = [
+    default_groups: List[Tuple[str, List[str]]] = [
         ("minority/positive cases", ["minority", "positive", "rare", "imbalance", "imbalanced", "defect", "defective", "failure"]),
         ("business cost", ["business", "cost", "risk", "impact", "expensive", "warranty", "rework", "quality", "go-live"]),
         ("error type", ["false negative", "false positive", "missed", "wrong", "false alarm", "miss"]),
         ("better metrics", ["precision", "recall", "confusion", "f1", "class-specific", "class specific"]),
         ("production decision", ["production", "threshold", "monitor", "decision", "alert", "deploy", "deployment", "owner", "response"]),
     ]
+    keyword_groups = default_groups
+    if configured_groups:
+        parsed_groups: List[Tuple[str, List[str]]] = []
+        for group in configured_groups:
+            if not isinstance(group, dict):
+                continue
+            label = str(group.get("label") or "").strip()
+            keywords = [str(item).lower() for item in (group.get("keywords") or []) if str(item).strip()]
+            if label and keywords:
+                parsed_groups.append((label, keywords))
+        if parsed_groups:
+            keyword_groups = parsed_groups
 
     for label, keywords in keyword_groups:
         if any(keyword in lowered for keyword in keywords):
@@ -299,6 +326,13 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
     interpretation = submission.get("interpretation", "")
     timeout_seconds = int(exercise.get("timeout_seconds", 2) or 2)
     function_name = exercise.get("function_name", "")
+    function_names = sorted(
+        {
+            str(test.get("function_name") or function_name)
+            for test in (exercise.get("visible_tests", []) + exercise.get("hidden_tests", []))
+            if str(test.get("function_name") or function_name).strip()
+        }
+    )
 
     result: Dict[str, Any] = {
         "topic_id": exercise.get("topic_id"),
@@ -306,6 +340,7 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
         "title": exercise.get("title"),
         "status": "not_run",
         "function_name": function_name,
+        "function_names": function_names or [function_name],
         "visible_tests": [],
         "hidden_tests": [],
         "diagnostics": {
@@ -326,13 +361,24 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
     }
 
     try:
-        fn = _load_function(code, function_name=function_name, timeout_seconds=timeout_seconds)
+        loaded_functions = {
+            name: _load_function(code, function_name=name, timeout_seconds=timeout_seconds)
+            for name in (function_names or [function_name])
+        }
         visible_results = [
-            _run_one_test(fn, test | {"visibility": "visible"}, timeout_seconds)
+            _run_one_test(
+                loaded_functions[str(test.get("function_name") or function_name)],
+                test | {"visibility": "visible"},
+                timeout_seconds,
+            )
             for test in exercise.get("visible_tests", [])
         ]
         raw_hidden_results = [
-            _run_one_test(fn, test | {"visibility": "hidden", "show_expected": False, "show_actual": False, "show_inputs": False}, timeout_seconds)
+            _run_one_test(
+                loaded_functions[str(test.get("function_name") or function_name)],
+                test | {"visibility": "hidden", "show_expected": False, "show_actual": False, "show_inputs": False},
+                timeout_seconds,
+            )
             for test in exercise.get("hidden_tests", [])
         ]
         hidden_results = [
@@ -360,6 +406,7 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
         result["interpretation"] = _interpretation_score(
             interpretation,
             exercise.get("expected_interpretation_focus", []),
+            exercise.get("interpretation_keyword_groups"),
         ) | {"text": interpretation}
         return result
 
@@ -386,6 +433,7 @@ def run_code_exercise(exercise: Dict[str, Any], submission: Dict[str, Any]) -> D
     result["interpretation"] = _interpretation_score(
         interpretation,
         exercise.get("expected_interpretation_focus", []),
+        exercise.get("interpretation_keyword_groups"),
     ) | {"text": interpretation}
     result["status"] = "passed" if passed else "failed"
     return result

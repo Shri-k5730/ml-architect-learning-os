@@ -227,8 +227,11 @@ Evaluation rules:
 11. Wrong technical terms are different from typos. Penalize real conceptual misuse, such as saying temperature is a hyperparameter, confusing precision with recall, calling model parameters hyperparameters, or using standardization formula incorrectly.
 12. When a numeric/coding answer has correct final values but a wrong formula description, say exactly that. Do not mark the final values as wrong if they are correct. Separate formula error, arithmetic error, interpretation gap, technical terminology misuse, and wording noise.
 13. Weak spots must be specific. Avoid generic feedback like "add a concrete metric or production control" when the exact issue is known. Prefer: "z-score formula was written incorrectly", "fit vs transform was not separated", "threshold owner was not named", or "false-negative cost was not named".
-14. If a learner has the correct mechanism but messy grammar, keep the content score intact and mention language only as a communication note.
-15. Decide one action only: pass, borderline, revise, or fail_prereq.
+14. When the payload includes expert_tutor_blueprint.teaching_contract, treat that visible contract as the maximum authored expectation. Do not invent an unstated answer requirement. You may still penalize a technically false or unsafe claim made by the learner.
+15. For a scenario-only tiny_hands_on question that contains no numeric data and asks what to conclude, do not demand a calculation or metric comparison. Evaluate the valid conclusion, invalid conclusion, evidence check, and safe next action.
+16. For architect_decision, demand trigger/evidence/owner/approval/action/monitoring only when that chain was shown in the teaching contract before the learner answered.
+17. If a learner has the correct mechanism but messy grammar, keep the content score intact and mention language only as a communication note.
+18. Decide one action only: pass, borderline, revise, or fail_prereq.
 13. Borderline means the learner can progress but should improve the topic later.
 14. Rewrite only the parts of the note that need correction.
 15. Return strict JSON only.

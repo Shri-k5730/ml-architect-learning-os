@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from src.blueprints.advanced_ml import get_blueprint
+from src.blueprints.advanced_ml import get_blueprint, teaching_contract_for_topic
+from src.blueprints.ml_architect_completion import ML_ARCHITECT_TUTOR_EXPANSIONS
 
 
 def _as_list(value: Any) -> List[str]:
@@ -159,6 +160,10 @@ ADVANCED_TUTOR_EXPANSIONS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# V2 completion topics and capstone use the same teacher-walkthrough renderer.
+ADVANCED_TUTOR_EXPANSIONS.update(ML_ARCHITECT_TUTOR_EXPANSIONS)
+
+
 
 def get_tutor_narrative(topic_id: str) -> Optional[Dict[str, Any]]:
     """Build a teacher-like narrative from the expert blueprint.
@@ -173,6 +178,7 @@ def get_tutor_narrative(topic_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     expansion = ADVANCED_TUTOR_EXPANSIONS.get(topic_id, {})
+    teaching_contract = teaching_contract_for_topic(topic_id)
     missions = bp.get("missions", []) or []
     mission_prep = []
     for mission in missions:
@@ -180,7 +186,7 @@ def get_tutor_narrative(topic_id: str) -> Optional[Dict[str, Any]]:
         qtype_raw = str(mission.get("type", "mission"))
         qtype = qtype_raw.replace("_", " ").title()
         expected = _as_list(mission.get("expected_focus", []))
-        mission_prep.append(_build_mission_prep(qid, qtype, qtype_raw, mission, expected, bp, expansion))
+        mission_prep.append(_build_mission_prep(qid, qtype, qtype_raw, mission, expected, bp, expansion, teaching_contract))
 
     sections: List[Dict[str, Any]] = [
         {
@@ -209,6 +215,18 @@ def get_tutor_narrative(topic_id: str) -> Optional[Dict[str, Any]]:
             "style": "normal",
         },
     ]
+
+    if teaching_contract:
+        sections.append(
+            {
+                "heading": "Assessment Contract: What You Will Actually Be Scored On",
+                "body": [
+                    teaching_contract.get("shared_rule", ""),
+                    teaching_contract.get("grading_boundary", ""),
+                ],
+                "style": "good",
+            }
+        )
 
     safe_vs_unsafe = _as_list(expansion.get("safe_vs_unsafe", []))
     if safe_vs_unsafe:
@@ -377,8 +395,10 @@ def _build_mission_prep(
     expected: List[str],
     bp: Dict[str, Any],
     expansion: Dict[str, Any],
+    teaching_contract: Dict[str, Any],
 ) -> Dict[str, Any]:
     controls = _as_list(bp.get("system_design_controls", []))[:4]
+    contract = (teaching_contract.get("missions", {}) or {}).get(str(mission.get("question_id", "")), {})
     mechanism = str(bp.get("core_mechanism", "")).strip()
     first_mechanism_sentence = mechanism.split(".")[0].strip() + "." if mechanism else "Use the topic-specific mechanism, not generic production language."
 
@@ -387,9 +407,14 @@ def _build_mission_prep(
         answer_shape = "80-120 words: precise definition → mechanism → one example → why the distinction matters."
         avoid = "Do not start with a long generic ML explanation. Do not repeat every control from the architect section."
     elif qtype_raw == "tiny_hands_on":
-        tested = "Can you apply the concept to the numbers or scenario, then interpret the result?"
-        answer_shape = "Show the method first, calculate or compare, then add one practical interpretation."
-        avoid = "Do not hide behind theory. Use the numbers or concrete objects in the question."
+        tested = "Can you apply the concept to the exact scenario without making an unsafe inference?"
+        question_l = str(mission.get("question", "")).lower()
+        numeric_task = any(ch.isdigit() for ch in question_l) or any(token in question_l for token in ["calculate", "precision", "recall", "threshold", "score", "auc"])
+        if numeric_task:
+            answer_shape = "Show the calculation or comparison → interpret it → state a safe decision."
+        else:
+            answer_shape = "Valid conclusion → invalid conclusion → evidence to check → safe action."
+        avoid = "Do not invent a calculation if none is requested. Do not turn a model clue into a business conclusion."
     elif qtype_raw == "failure_diagnosis":
         tested = "Can you separate symptom, root mechanism, evidence, and prevention?"
         answer_shape = "Symptom → specific mechanism → evidence to inspect → prevention control."
@@ -407,10 +432,10 @@ def _build_mission_prep(
         answer_shape = "Definition → example → failure mode → control."
         avoid = "Do not write an essay."
 
-    must_include = expected[:] if expected else []
+    must_include = _as_list(contract.get("required_demonstration", [])) or (expected[:] if expected else [])
     if not must_include:
         must_include = [first_mechanism_sentence]
-    if qtype_raw in {"architect_decision", "failure_diagnosis"} and controls:
+    if qtype_raw in {"architect_decision", "failure_diagnosis"} and controls and not contract.get("required_demonstration"):
         must_include.extend([f"Control: {item}" for item in controls[:2]])
 
     return {
@@ -420,6 +445,9 @@ def _build_mission_prep(
         "must_include": must_include[:6],
         "answer_shape": answer_shape,
         "avoid": avoid,
+        "not_required": str(contract.get("not_required", "")),
+        "unsafe_leap": str(contract.get("unsafe_leap", "")),
+        "parallel_example": str(contract.get("parallel_example", "")),
         "how_to_answer": _mission_answer_guidance(qtype_raw, bp, expansion),
     }
 

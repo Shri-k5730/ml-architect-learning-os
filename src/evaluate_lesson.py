@@ -56,6 +56,7 @@ def persist_evaluation_to_supabase(
     practice_result: Dict[str, Any] | None = None,
     practice_coaching: Dict[str, Any] | None = None,
     language_noise: List[Dict[str, Any]] | None = None,
+    capstone_deliverables: Dict[str, Any] | None = None,
 ) -> None:
     upsert_run(
         run_id=run_id,
@@ -129,6 +130,14 @@ def persist_evaluation_to_supabase(
                 "items": language_noise,
                 "policy": "Typos/spelling are separated from technical evaluation. Technical-term misuse remains content feedback.",
             },
+        )
+
+    if capstone_deliverables is not None:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="capstone_deliverables",
+            topic_id=topic_id,
+            payload=capstone_deliverables,
         )
 
     upsert_state(
@@ -390,6 +399,48 @@ def _is_checkpoint_topic(topic_id: str) -> bool:
     return str(topic_id or "").startswith("checkpoint_")
 
 
+def _is_capstone_topic(topic_id: str) -> bool:
+    return str(topic_id or "").startswith("capstone_")
+
+
+def build_capstone_deliverables(topic_id: str, user_answers: List[UserAnswer]) -> Dict[str, Any] | None:
+    """Package capstone responses as reviewable architecture artifacts.
+
+    Supabase stores the pack as a dedicated artifact. This keeps the capstone
+    operationally different from a normal lesson without introducing local state.
+    """
+    if not _is_capstone_topic(topic_id):
+        return None
+
+    answer_map = {answer.question_id: answer.answer for answer in user_answers}
+    sections = {
+        "problem_framing_and_scope": answer_map.get("q1", ""),
+        "validation_model_and_threshold_report": answer_map.get("q2", ""),
+        "error_analysis_and_explainability_limits": answer_map.get("q3", ""),
+        "monitoring_fallback_and_retraining_plan": answer_map.get("q4", ""),
+        "model_card_and_architecture_decision_readout": answer_map.get("q5", ""),
+    }
+    required_artifacts = [
+        "problem framing and scope",
+        "validation and model evaluation report",
+        "threshold decision note",
+        "error analysis table design",
+        "monitoring and retraining plan",
+        "model card summary",
+        "architecture decision record",
+    ]
+    populated = sum(1 for text in sections.values() if str(text or "").strip())
+    return {
+        "topic_id": topic_id,
+        "artifact_type": "ml_architect_capstone_pack",
+        "sections": sections,
+        "required_artifacts": required_artifacts,
+        "sections_completed": populated,
+        "sections_required": len(sections),
+        "review_status": "submitted_for_evaluation" if populated == len(sections) else "incomplete_submission",
+    }
+
+
 def _score_values(evaluation: EvaluationResult) -> List[int]:
     return [
         int(evaluation.scores.conceptual_clarity or 0),
@@ -405,16 +456,20 @@ def apply_practice_gate_to_evaluation(
 ) -> EvaluationResult:
     topic_id = str(getattr(evaluation, "topic_id", "") or "")
     is_checkpoint = _is_checkpoint_topic(topic_id)
+    is_capstone = _is_capstone_topic(topic_id)
+    is_gated_milestone = is_checkpoint or is_capstone
+    milestone_label = "Checkpoint" if is_checkpoint else "Capstone"
 
     if practice_result is None:
-        if is_checkpoint:
+        if is_gated_milestone:
             evaluation.decision = "revise"
             evaluation.next_action = "retry_same_topic"
-            if "Checkpoint requires a practical Code Lab result before progression." not in evaluation.weak_spots:
-                evaluation.weak_spots.append("Checkpoint requires a practical Code Lab result before progression.")
+            missing_lab = f"{milestone_label} requires a practical Code Lab result before progression."
+            if missing_lab not in evaluation.weak_spots:
+                evaluation.weak_spots.append(missing_lab)
             evaluation.decision_reason = (
                 evaluation.decision_reason
-                + " Checkpoint gate applied: no Code Lab result was available."
+                + f" {milestone_label} gate applied: no Code Lab result was available."
             )
         return evaluation
 
@@ -458,20 +513,25 @@ def apply_practice_gate_to_evaluation(
                 + " Practical gate applied: implementation passed, but interpretation needs strengthening."
             )
 
-    if is_checkpoint:
+    if is_gated_milestone:
         minimum_score = min(_score_values(evaluation))
         if minimum_score < 3 or interpretation_score < 3 or evaluation.decision != "pass":
             evaluation.decision = "revise"
             evaluation.next_action = "retry_same_topic"
-            checkpoint_gap = (
-                "Checkpoint progression requires all core scores >= 3, Code Lab passed, "
+            milestone_gap = (
+                f"{milestone_label} progression requires all core scores >= 3, Code Lab passed, "
                 "and production interpretation >= 3."
             )
-            if checkpoint_gap not in evaluation.weak_spots:
-                evaluation.weak_spots.append(checkpoint_gap)
+            if milestone_gap not in evaluation.weak_spots:
+                evaluation.weak_spots.append(milestone_gap)
+            lock_reason = (
+                "Capstone remains locked until the ML Architect checkpoint is cleanly passed."
+                if is_checkpoint and topic_id == "checkpoint_ml_architect_001"
+                else "Next progression remains locked until this milestone is cleanly passed."
+            )
             evaluation.decision_reason = (
                 evaluation.decision_reason
-                + " Checkpoint gate applied: Advanced ML remains locked until the foundation checkpoint is cleanly passed."
+                + f" {milestone_label} gate applied: {lock_reason}"
             )
 
     return evaluation
@@ -569,12 +629,14 @@ def main() -> None:
 
 
     answers_payload = {
-    "topic_id": topic_id,
-    "answers": [a.to_dict() for a in user_answers],
-}
+        "topic_id": topic_id,
+        "answers": [a.to_dict() for a in user_answers],
+    }
+    capstone_deliverables = build_capstone_deliverables(topic_id, user_answers)
 
     write_json(f"runs/{run_id}/answers.json", answers_payload)
-
+    if capstone_deliverables is not None:
+        write_json(f"runs/{run_id}/capstone_deliverables.json", capstone_deliverables)
 
     write_json(f"runs/{run_id}/evaluation.json", evaluation)
 
@@ -676,6 +738,7 @@ topic_id: {topic_id}
             "practice_submission": run_state.get("artifacts", {}).get("practice_submission"),
             "practice_result": f"runs/{run_id}/practice_result.json" if practice_result is not None else None,
             "practice_coaching": f"runs/{run_id}/practice_coaching.json" if practice_coaching is not None else None,
+            "capstone_deliverables": f"runs/{run_id}/capstone_deliverables.json" if capstone_deliverables is not None else None,
         },
         "scores": {
             "conceptual_clarity": evaluation.scores.conceptual_clarity,
@@ -702,6 +765,7 @@ topic_id: {topic_id}
             practice_result=practice_result,
             practice_coaching=practice_coaching,
             language_noise=language_noise,
+            capstone_deliverables=capstone_deliverables,
         )
         write_log(run_id, "Supabase persistence completed for evaluation.")
     except Exception as exc:

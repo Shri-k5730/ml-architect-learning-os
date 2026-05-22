@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from src.schemas import ArchitectNote, Assessment, AssessmentQuestion, ConceptNote, UseCaseMapping
+from src.blueprints.ml_architect_completion import ML_ARCHITECT_COMPLETION_BLUEPRINTS
 
 
 def _mcq(question: str, options: List[str], answer_index: int, explanation: str) -> Dict[str, Any]:
@@ -338,6 +339,38 @@ ADVANCED_ML_BLUEPRINTS: Dict[str, Dict[str, Any]] = {
         "system_design_controls": ["explanation audit trail", "global/local explanation separation", "domain review", "causality warning", "approval path for process action"],
         "mission_answer_frame": ["State what the explanation shows about model behavior.", "State what it cannot prove: causality, correctness, safety, or no leakage.", "Identify misinterpretation risk for stakeholders.", "Define validation path: domain review, data check, experiment, or process evidence.", "Add governance controls: audit trail, global/local separation, caveat, and approval path."],
         "do_not_waste_words": ["Do not say explanations make AI transparent without limits.", "Do not claim feature importance proves cause.", "Do not skip review process."],
+        "teaching_contract": {
+            "shared_rule": "An explanation is investigation evidence about model reliance. It is never sufficient proof of physical cause, model correctness, feature safety, or permission to change a process.",
+            "grading_boundary": "You will be assessed on claims taught here: valid vs invalid conclusions, evidence before action, and governance for process changes. You are not expected to invent numeric metrics or calculations for a scenario that provides none.",
+            "missions": {
+                "q1": {
+                    "required_demonstration": ["Define explanation as model-behaviour evidence.", "Separate model reliance from real-world cause.", "State the stakeholder/process risk of treating a chart as proof."],
+                    "unsafe_leap": "Do not say importance identifies the real cause or proves the model is right.",
+                    "parallel_example": "If supplier_id appears important in a warranty model, the model relied on supplier_id; this alone does not prove that supplier quality caused the warranty event."
+                },
+                "q2": {
+                    "required_demonstration": ["Valid conclusion: the model relied strongly on humidity.", "Invalid conclusion: humidity caused defects or must automatically be retained/acted on.", "Safe next step: inspect reliability, leakage/proxy risk, correlated factors, and domain evidence before action."],
+                    "not_required": "No metric or calculation is required because the question gives no numeric comparison.",
+                    "unsafe_leap": "High importance alone does not prove a feature is safe, stable, non-leaky, or mandatory in production.",
+                    "parallel_example": "If operator_id ranks highly, do not immediately redesign staffing. First check whether it proxies shift, product mix, or inspection practice."
+                },
+                "q3": {
+                    "required_demonstration": ["Name the causality trap.", "State the missing validation or approval failure.", "Name evidence and prevention controls before a future process change."],
+                    "unsafe_leap": "Do not reduce the diagnosis to 'the model failed'; the failure was acting on explanation without evidence.",
+                    "parallel_example": "If a pressure reading is important and the team lowers pressure without validation, worsening scrap is a governance failure before it is a model failure."
+                },
+                "q4": {
+                    "required_demonstration": ["Separate global behaviour review from local decision explanation.", "Define what is logged: model version, data slice or input context, prediction, explanation, timestamp, reviewer and decision.", "Define trigger, evidence, owner, approval action and post-change monitoring."],
+                    "unsafe_leap": "A SHAP dashboard is not an explainability governance process by itself.",
+                    "parallel_example": "A supplier-risk explanation that prompts a sourcing action must be logged, reviewed by ML and quality/process owners, approved with evidence, and monitored after the change."
+                },
+                "q5": {
+                    "required_demonstration": ["Explain in business language: clue, not verdict.", "Give one concrete example of value and limit.", "Close with the no-process-change-without-validation rule."],
+                    "unsafe_leap": "Do not drown a stakeholder in feature-attribution terminology.",
+                    "parallel_example": "An explanation is like a warning light: it tells you where to inspect, not which component to replace without checking."
+                }
+            }
+        },
         "mcqs": [
             _mcq("What is a safe use of explanations?", ["Clues requiring validation", "Causal proof", "Replacement for testing", "Reason to skip domain review"], 0, "Explanations need validation."),
             _mcq("What is a local explanation?", ["Explanation for one prediction", "A retraining pipeline", "A global policy", "A database backup"], 0, "Local explanations explain individual outputs."),
@@ -385,6 +418,10 @@ ADVANCED_ML_BLUEPRINTS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# V2 ML Architect completion block and capstone share the deterministic blueprint engine.
+ADVANCED_ML_BLUEPRINTS.update(ML_ARCHITECT_COMPLETION_BLUEPRINTS)
+
+
 
 def has_blueprint(topic_id: str) -> bool:
     return str(topic_id or "") in ADVANCED_ML_BLUEPRINTS
@@ -400,6 +437,46 @@ def get_required_blueprint(topic_id: str) -> Dict[str, Any]:
     if not bp:
         raise KeyError(f"No expert tutor blueprint configured for topic_id={topic_id}")
     return bp
+
+
+def teaching_contract_for_topic(topic_id: str) -> Dict[str, Any]:
+    """Return the visible teaching-to-evaluation contract for a blueprint topic.
+
+    Authored mission rules override the safe generic contract. The generic contract
+    makes the scoring depth explicit for new V2 topics so evaluation cannot silently
+    demand an unstated workflow.
+    """
+    bp = get_required_blueprint(topic_id)
+    authored = deepcopy(bp.get("teaching_contract", {}) or {})
+    authored_missions = authored.get("missions", {}) or {}
+    controls = list(bp.get("system_design_controls", []) or [])
+    mission_contracts: Dict[str, Dict[str, Any]] = {}
+    for mission in bp.get("missions", []) or []:
+        qid = str(mission.get("question_id", ""))
+        qtype = str(mission.get("type", "mission"))
+        focus = [str(x) for x in mission.get("expected_focus", []) or []]
+        required = [f"Address the published focus: {item}." for item in focus[:4]]
+        generic = {
+            "required_demonstration": required or ["Apply the topic mechanism to the stated scenario."],
+            "not_required": "Do not add evidence, metrics, or controls not requested by the scenario unless you clearly label them as an architect enhancement.",
+            "unsafe_leap": "Do not replace the topic-specific reasoning with generic production-risk language.",
+            "parallel_example": "",
+        }
+        if qtype == "tiny_hands_on":
+            generic["not_required"] = "Use calculations only when the question provides numbers or explicitly requests a calculation. Scenario questions require a valid conclusion, invalid conclusion, evidence check, and safe action."
+        elif qtype == "architect_decision":
+            generic["required_demonstration"].append("Show the governance chain: trigger, evidence, owner, approval/action, and monitoring or response.")
+            if controls:
+                generic["required_demonstration"].append(f"Use relevant taught controls such as: {', '.join(controls[:4])}.")
+        elif qtype == "failure_diagnosis":
+            generic["required_demonstration"].append("Separate symptom, mechanism, evidence and prevention.")
+        generic.update(authored_missions.get(qid, {}) or {})
+        mission_contracts[qid] = generic
+    return {
+        "shared_rule": authored.get("shared_rule") or "The evaluator may judge only the published mission focus and technically incorrect claims, not hidden requirements.",
+        "grading_boundary": authored.get("grading_boundary") or "Architect missions require explicit control and ownership reasoning when those requirements are shown before submission.",
+        "missions": mission_contracts,
+    }
 
 
 def blueprint_to_concept_note(topic_id: str) -> ConceptNote:
@@ -484,13 +561,14 @@ def blueprint_to_booster(topic_id: str) -> Optional[Dict[str, Any]]:
         "key_distinctions": [bp.get("definition", ""), bp.get("core_mechanism", ""), *bp.get("nuances", [])[:3]],
         "answer_frame": bp.get("mission_answer_frame", []),
         "mission_bridge": blueprint_mission_bridge(topic_id),
+        "teaching_contract": teaching_contract_for_topic(topic_id),
         "mission_focus": _flatten_expected_focus(bp.get("missions", [])),
         "mcqs": bp.get("mcqs", []),
         "blueprint": bp,
     }
 
 
-def blueprint_mission_bridge(topic_id: str) -> List[Dict[str, str]]:
+def blueprint_mission_bridge(topic_id: str) -> List[Dict[str, Any]]:
     bp = get_blueprint(topic_id)
     if not bp:
         return []
@@ -501,15 +579,21 @@ def blueprint_mission_bridge(topic_id: str) -> List[Dict[str, str]]:
         "architect_decision": "Name controls, ownership, thresholds, persistence, monitoring, or fallback as relevant.",
         "teachback": "Explain simply with one concrete business consequence and one control.",
     }
-    out: List[Dict[str, str]] = []
+    out: List[Dict[str, Any]] = []
+    contract_missions = teaching_contract_for_topic(topic_id).get("missions", {})
     for mission in bp.get("missions", []):
         expected = mission.get("expected_focus", [])
+        qid = str(mission.get("question_id", ""))
+        contract = contract_missions.get(qid, {})
         out.append(
             {
                 "mission_type": mission.get("type", "mission"),
-                "question_id": mission.get("question_id", ""),
+                "question_id": qid,
                 "tested_skill": labels.get(mission.get("type", ""), "Apply the concept to the exact scenario."),
                 "use_from_booster": "; ".join(expected[:4]) if expected else "Use the mechanism, example, risk, and control.",
+                "required_demonstration": contract.get("required_demonstration", []),
+                "not_required": contract.get("not_required", ""),
+                "unsafe_leap": contract.get("unsafe_leap", ""),
             }
         )
     return out
@@ -529,7 +613,7 @@ def blueprint_context(topic_id: str) -> Dict[str, Any]:
     if not bp:
         return {}
     return {
-        "blueprint_version": "advanced_ml_expert_blueprint_v1",
+        "blueprint_version": "teaching_evaluation_contract_v2",
         "topic_id": bp["topic_id"],
         "title": bp["title"],
         "definition": bp.get("definition", ""),
@@ -539,5 +623,6 @@ def blueprint_context(topic_id: str) -> Dict[str, Any]:
         "system_design_controls": bp.get("system_design_controls", []),
         "mission_answer_frame": bp.get("mission_answer_frame", []),
         "do_not_waste_words": bp.get("do_not_waste_words", []),
+        "teaching_contract": teaching_contract_for_topic(topic_id),
         "missions": bp.get("missions", []),
     }

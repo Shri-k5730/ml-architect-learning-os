@@ -67,7 +67,10 @@ def build_evaluator_refiner_payload(
     if blueprint:
         payload["expert_tutor_blueprint"] = blueprint
         payload["evaluation_instruction"] = (
-            "Evaluate against expert_tutor_blueprint. Do not reward generic production-risk language unless the answer names the topic-specific mechanism, evidence, and control. Penalize overexplaining the basic definition while missing the practical control."
+            "Evaluate against expert_tutor_blueprint and its visible teaching_contract. Penalize technically unsafe claims even when phrased confidently. "
+            "Do not penalize a learner for controls, calculations, metrics, or workflow detail that the teaching_contract and mission did not require. "
+            "For scenario-only tiny_hands_on questions with no numeric inputs, judge valid conclusion, invalid conclusion, evidence check, and safe action; do not invent a numeric-comparison requirement. "
+            "For architect_decision questions, require trigger/evidence/owner/approval/action/monitoring only when that chain is shown in the teaching_contract before submission."
         )
     if practice_exercise is not None:
         payload["practice_exercise"] = practice_exercise

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from src.agents.mcq_quality import get_quality_mcqs
+from src.blueprints.advanced_ml import blueprint_to_booster
 
 
 # Study Booster is a deterministic, copy-safe learning layer.
@@ -432,23 +433,29 @@ def _fallback_key_distinctions(concept_note: Dict[str, Any], architect_note: Dic
     return distinctions[:3]
 
 
-def _mission_bridge_from_questions(booster: Dict[str, Any], questions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+def _mission_bridge_from_questions(booster: Dict[str, Any], questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     configured = booster.get("mission_bridge", []) or []
-    if configured:
-        return configured
-
-    bridge: List[Dict[str, str]] = []
+    configured_by_type = {str(item.get("mission_type", "")): item for item in configured if isinstance(item, dict)}
+    contract_missions = ((booster.get("teaching_contract", {}) or {}).get("missions", {}) or {})
+    bridge: List[Dict[str, Any]] = []
     for question in questions:
         qtype = str(question.get("type", "mission"))
+        qid = str(question.get("question_id", ""))
         expected = question.get("expected_focus", []) or []
         expected_text = "; ".join(str(item) for item in expected[:3])
         if not expected_text:
             expected_text = "Use the concept, scenario evidence, failure mode, and production control."
+        configured_item = dict(configured_by_type.get(qtype, {}))
+        contract = dict(contract_missions.get(qid, {}))
         bridge.append(
             {
                 "mission_type": qtype,
-                "tested_skill": MISSION_TYPE_SKILL_MAP.get(qtype, "Apply the concept to the exact mission scenario."),
-                "use_from_booster": expected_text,
+                "question_id": qid,
+                "tested_skill": configured_item.get("tested_skill") or MISSION_TYPE_SKILL_MAP.get(qtype, "Apply the concept to the exact mission scenario."),
+                "use_from_booster": configured_item.get("use_from_booster") or expected_text,
+                "required_demonstration": contract.get("required_demonstration", configured_item.get("required_demonstration", [])),
+                "not_required": contract.get("not_required", configured_item.get("not_required", "")),
+                "unsafe_leap": contract.get("unsafe_leap", configured_item.get("unsafe_leap", "")),
             }
         )
     return bridge
@@ -458,6 +465,15 @@ def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_
     """Return copy-safe pre-mission support aligned to final missions."""
     title = concept_note.get("title", topic_id)
     base = dict(ADVANCED_ML_BOOSTERS.get(topic_id, {}))
+    blueprint_base = blueprint_to_booster(topic_id) or {}
+
+    # V2 completion lessons, checkpoint, and capstone are authored in the
+    # deterministic blueprint source rather than duplicated in this UI helper.
+    if not base and blueprint_base:
+        base = dict(blueprint_base)
+    elif blueprint_base.get("teaching_contract"):
+        # Existing boosters still receive the authoritative teaching-to-evaluation contract.
+        base["teaching_contract"] = blueprint_base.get("teaching_contract")
 
     if not base:
         base = {

@@ -1,0 +1,12 @@
+Patch 038 Cumulative . Apply this package only.
+
+Includes:
+- Previously unapplied Patch 037 curriculum, checkpoint and capstone content.
+- Teaching-to-evaluation contract alignment for mlf_019 and blueprint-backed V2 lessons.
+- Verify Draft and coaching corrections.
+- Code Lab sandbox support for sorted/set required by the checkpoint exercise.
+
+Deployment order:
+1. Apply files to GitHub repository and push to deploy Streamlit Cloud.
+2. After successful deployment, run supabase/sql/038_cumulative_v2_ml_architect_completion_teaching_contract.sql.
+3. Do not apply the earlier Patch 037 ZIP or SQL separately.
