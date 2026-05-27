@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from src.blueprints.tutor_experience import get_code_lab_guidance
+
 
 def _groups(*items: tuple[str, list[str]]) -> list[dict[str, Any]]:
     return [{"label": label, "keywords": keywords} for label, keywords in items]
@@ -256,3 +258,8 @@ def choose_threshold(scores, y_true, min_recall=0.80):
         "timeout_seconds": 2,
     },
 }
+
+# Learners see the meaning of each function before they are asked to code or interpret it.
+for _topic_id, _exercise in V2_PRACTICE_EXERCISES.items():
+    _exercise.update(get_code_lab_guidance(_topic_id))
+

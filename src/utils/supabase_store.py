@@ -245,3 +245,27 @@ def fetch_learner_progress_rows() -> List[Dict[str, Any]]:
         return []
     result = client.table("mlos_learner_progress").select("*").execute()
     return getattr(result, "data", None) or []
+
+def fetch_topic_resources(topic_id: str) -> List[Dict[str, Any]]:
+    """Return optional curated learning resources for a topic.
+
+    This deliberately fails closed while Patch 039 code deploys before its
+    additive SQL migration. Lessons remain usable even when the resource table
+    has not been created yet or is temporarily unavailable.
+    """
+    client = get_supabase_client()
+    if client is None or not str(topic_id or "").strip():
+        return []
+    try:
+        result = (
+            client.table("mlos_topic_resources")
+            .select("resource_id,topic_id,resource_type,title,provider,url,purpose,estimated_minutes,is_primary,is_optional,sequence_order")
+            .eq("topic_id", topic_id)
+            .eq("is_active", True)
+            .order("sequence_order", desc=False)
+            .execute()
+        )
+        return getattr(result, "data", None) or []
+    except Exception:
+        return []
+

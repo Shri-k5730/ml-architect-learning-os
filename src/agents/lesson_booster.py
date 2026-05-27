@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 from src.agents.mcq_quality import get_quality_mcqs
 from src.blueprints.advanced_ml import blueprint_to_booster
+from src.blueprints.tutor_experience import get_application_drill
 
 
 # Study Booster is a deterministic, copy-safe learning layer.
@@ -494,6 +495,7 @@ def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_
         if qtype in {"tiny_hands_on", "failure_diagnosis", "architect_decision"}:
             mission_focus.extend(str(item) for item in focus_items[:2])
 
+    application = get_application_drill(topic_id)
     return {
         "topic_id": topic_id,
         "title": title,
@@ -505,5 +507,7 @@ def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_
         "answer_frame": base.get("answer_frame", []) or DEFAULT_ANSWER_FRAME,
         "mission_bridge": _mission_bridge_from_questions(base, questions),
         "mission_focus": mission_focus[:6],
+        "application_prompt": application.get("prompt", ""),
+        "application_reveal": application.get("reveal", ""),
         "mcqs": get_quality_mcqs(topic_id, base.get("mcqs", []) or _fallback_mcqs(str(title))),
     }

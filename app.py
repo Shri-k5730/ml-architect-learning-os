@@ -27,7 +27,7 @@ from src.agents.writing_assist import analyze_answer_text
 from src.agents.tutor_narrative import get_tutor_narrative
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts
+from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources
 from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
 
 
@@ -1760,7 +1760,7 @@ def render_topic_hero(run_state: Dict[str, Any], concept_note: Dict[str, Any], m
             <div class="topic-subline">Complete the flow left to right: learn, bridge the concept to missions, check understanding, write and verify drafts, run practical work, then submit.</div>
             <div class="workflow-strip">
                 <span class="workflow-step">1 Learn</span>
-                <span class="workflow-step">2 Booster</span>
+                <span class="workflow-step">2 Apply It</span>
                 <span class="workflow-step">3 MCQs</span>
                 <span class="workflow-step">4 Missions + Verify</span>
                 <span class="workflow-step">5 Code Lab</span>
@@ -1812,105 +1812,89 @@ def render_learning_brief(concept_note: Dict[str, Any], architect_note: Dict[str
 
 
 
+def render_topic_resources_panel(topic_id: str) -> None:
+    """Show optional, Supabase-managed learning resources without making them assessment prerequisites."""
+    resources = fetch_topic_resources(topic_id)
+    if not resources:
+        return
+
+    with st.expander("Learn Further . Optional resources", expanded=False):
+        st.caption("Use these when the in-app explanation is not enough. These links are optional and are not hidden assessment requirements.")
+        for item in resources:
+            rtype = str(item.get("resource_type", "resource")).replace("_", " ").title()
+            primary = " · Recommended first" if item.get("is_primary") else ""
+            minutes = item.get("estimated_minutes")
+            time_note = f" · approx. {minutes} min" if minutes else ""
+            st.markdown(f"**{rtype}{primary}**{time_note}")
+            st.markdown(f"[{item.get('title', 'Open resource')}]({item.get('url', '')}) · {item.get('provider', '')}")
+            if item.get("purpose"):
+                st.caption(str(item.get("purpose")))
+            st.divider()
+
+
 
 def render_tutor_narrative_panel(topic_id: str) -> bool:
-    """Render expert-tutor narrative when a blueprint exists.
-
-    Returns True when rendered so the caller can skip the older generic learning brief.
-    """
+    """Render one coherent lesson, while moving scoring detail out of the teaching flow."""
     narrative = get_tutor_narrative(topic_id)
     if not narrative:
         return False
 
     st.markdown("### Expert Tutor Lesson")
-    st.caption("This is not a reference card. Read it as the teacher walkthrough before missions.")
+    st.caption("Learn the idea here once. Application and mission requirements are separated into their own tabs.")
 
     sections = narrative.get("sections", []) or []
-    for section in sections:
-        style = str(section.get("style", "normal"))
-        css_class = "callout-good" if style == "good" else "callout-risk" if style == "risk" else ""
-        render_static_card(section.get("heading", "Section"), section.get("body", ""), css_class)
+    section_map = {str(section.get("heading", "")): section for section in sections}
+    for heading in ["Start Here: The Intuition", "Slow Walkthrough: What Actually Changes", "Worked Example, Step by Step"]:
+        section = section_map.get(heading)
+        if section:
+            style = str(section.get("style", "normal"))
+            css_class = "callout-good" if style == "good" else "callout-risk" if style == "risk" else ""
+            render_static_card(section.get("heading", "Section"), section.get("body", ""), css_class)
 
-    mission_prep = narrative.get("mission_prep", []) or []
-    if mission_prep:
-        st.markdown("### Mission-by-Mission Prep")
-        st.caption("This is the bridge between what was taught and what you are about to answer. It is visible by default because hidden prep is useless.")
-        for item in mission_prep:
-            with st.container(border=True):
-                st.markdown(f"#### {item.get('title', 'Mission')}")
-                question = item.get("question", "")
-                if question:
-                    st.markdown("**Question**")
-                    st.write(question)
+    quick_check = section_map.get("Pause and Check Yourself")
+    if quick_check:
+        render_static_card("Stop and Test Your Understanding", quick_check.get("body", ""), "callout-good")
 
-                tested_skill = item.get("tested_skill") or item.get("what_it_tests") or "Apply the topic mechanism to the mission scenario."
-                st.markdown("**What this is really testing**")
-                st.info(tested_skill)
-
-                must_include = item.get("must_include", []) or []
-                if must_include:
-                    st.markdown("**Strong answer must include**")
-                    for point in must_include:
-                        st.markdown(f"- {point}")
-
-                answer_shape = item.get("answer_shape", "")
-                if answer_shape:
-                    st.markdown("**Answer shape**")
-                    st.success(answer_shape)
-
-                not_required = item.get("not_required", "")
-                if not_required:
-                    st.markdown("**Not required unless explicitly asked**")
-                    st.caption(not_required)
-
-                unsafe_leap = item.get("unsafe_leap", "")
-                if unsafe_leap:
-                    st.markdown("**Unsafe conclusion to avoid**")
-                    st.warning(unsafe_leap)
-
-                parallel_example = item.get("parallel_example", "")
-                if parallel_example:
-                    st.markdown("**Worked parallel example**")
-                    st.info(parallel_example)
-
-                avoid = item.get("avoid", "")
-                if avoid:
-                    st.markdown("**Do not waste words on**")
-                    st.warning(avoid)
-
-                how_to_answer = item.get("how_to_answer", "")
-                if how_to_answer:
-                    st.caption(how_to_answer)
+    deeper_headings = [
+        "Precise Definition",
+        "Why This Concept Exists",
+        "Unsafe vs Safe Pattern",
+        "Nuances You Should Not Miss",
+        "Common Traps",
+        "Architect Translation",
+        "System Design Controls",
+    ]
+    available_deeper = [section_map[h] for h in deeper_headings if h in section_map]
+    if available_deeper:
+        with st.expander("Architect depth and guardrails . Optional before missions", expanded=False):
+            for section in available_deeper:
+                style = str(section.get("style", "normal"))
+                css_class = "callout-good" if style == "good" else "callout-risk" if style == "risk" else ""
+                render_static_card(section.get("heading", "Section"), section.get("body", ""), css_class)
     return True
 
 
 def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
-    st.markdown("### Study Booster")
-    st.caption("This bridges the gap between the concept note and mission-quality answers. It is not an answer bank.")
+    st.markdown("### Apply It")
+    st.caption("One short reasoning drill before MCQs and missions. This tab should not repeat the lesson.")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("In One Line", booster.get("plain_language", ""), "callout-good")
-    with c2:
-        render_static_card("Worked Example", booster.get("worked_example", ""))
+    prompt = booster.get("application_prompt", "")
+    reveal = booster.get("application_reveal", "")
+    if prompt:
+        render_static_card("Decision Drill", prompt, "callout-good")
+        with st.expander("Reveal reasoning after attempting it", expanded=False):
+            st.write(reveal)
+    else:
+        render_static_card("Application Prompt", booster.get("production_trap", ""), "callout-risk")
+        st.caption("Use the concept learned in Tab 1 to state the safe decision and the reason.")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Common Production Trap", booster.get("production_trap", ""), "callout-risk")
-    with c2:
-        render_static_card("How To Approach Missions", booster.get("mission_hint", ""))
-
-    key_distinctions = booster.get("key_distinctions", []) or []
-    if key_distinctions:
-        render_static_card("Key Distinctions You Must Know", key_distinctions, "callout-good")
-
-    answer_frame = booster.get("answer_frame", []) or []
-    if answer_frame:
-        render_static_card("Mission Answer Frame", answer_frame)
-
-    focus = booster.get("mission_focus", []) or []
-    if focus:
-        render_static_card("Evaluator Will Look For", focus)
+    with st.expander("Response scaffold . open only if stuck", expanded=False):
+        answer_frame = booster.get("answer_frame", []) or []
+        if answer_frame:
+            render_static_card("Use this structure", answer_frame)
+        focus = booster.get("mission_focus", []) or []
+        if focus:
+            render_static_card("Concepts that will recur in missions", focus)
 
 
 def render_mission_bridge(booster: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
@@ -1919,8 +1903,8 @@ def render_mission_bridge(booster: Dict[str, Any], assessment_doc: Dict[str, Any
     if not bridge_items and not questions:
         return
 
-    st.markdown("### Mission Readiness Map")
-    st.caption("This is the contract between what was taught and what each mission expects. Use it to plan, not to copy.")
+    st.markdown("### Mission Requirements")
+    st.caption("Open the requirement for the mission you are answering. These are published scoring requirements, not additional lesson content.")
 
     bridge_by_type = {
         str(item.get("mission_type", "")): item
@@ -1932,7 +1916,7 @@ def render_mission_bridge(booster: Dict[str, Any], assessment_doc: Dict[str, Any
         qtype = str(question.get("type", "mission"))
         bridge = bridge_by_type.get(qtype, {})
         title = qtype.replace("_", " ").title()
-        with st.expander(f"Mission {idx} . {title} . what this is testing", expanded=(idx == 1)):
+        with st.expander(f"Mission {idx} . {title} . what this is testing", expanded=False):
             tested = bridge.get("tested_skill") or "Apply the concept to the exact scenario, then state the practical or architectural implication."
             taught = bridge.get("use_from_booster") or "Use the learning brief, study booster, and the mission scenario. Avoid generic definitions."
             st.markdown("**Tested skill**")
@@ -2423,7 +2407,7 @@ with tabs[1]:
         practice_submission = None
         updated_practice_submission = None
 
-        current_tabs = ["① Learn", "② Study Booster", "③ MCQs", "④ Missions + Verify"]
+        current_tabs = ["① Learn", "② Apply It", "③ MCQs", "④ Missions + Verify"]
         if practice_exercise is not None:
             current_tabs.append("⑤ Code Lab")
             submit_tab_label = "⑥ Submit"
@@ -2435,6 +2419,7 @@ with tabs[1]:
         with lesson_tabs[0]:
             if not render_tutor_narrative_panel(topic_id):
                 render_learning_brief(concept_note, architect_note)
+            render_topic_resources_panel(topic_id)
 
         with lesson_tabs[1]:
             render_booster_walkthrough(booster)
@@ -2528,8 +2513,15 @@ with tabs[1]:
                 }
 
                 st.markdown("### Code Lab")
-                st.caption("Practical V2 exercise. Written answers alone are no longer enough.")
-                render_static_card(practice_exercise.get("title", "Practice Exercise"), practice_exercise.get("prompt", ""), "callout-good")
+                st.caption("First understand what the function represents. Then write the code and explain the result.")
+                concept_bridge = practice_exercise.get("concept_bridge", "")
+                if concept_bridge:
+                    render_static_card("Why This Function Exists", concept_bridge, "callout-good")
+                worked_code_example = practice_exercise.get("worked_code_example", "")
+                if worked_code_example:
+                    with st.expander("Small example before coding", expanded=True):
+                        st.write(worked_code_example)
+                render_static_card(practice_exercise.get("title", "Practice Exercise"), practice_exercise.get("prompt", ""))
 
                 code_text = st.text_area(
                     "Code submission",
@@ -2537,12 +2529,17 @@ with tabs[1]:
                     height=260,
                     key=f"{run_state['run_id']}_practice_code",
                 )
+                st.markdown("#### Practical interpretation")
+                st.caption(practice_exercise.get("interpretation_prompt", "Explain what the result means."))
+                interpretation_focus = practice_exercise.get("expected_interpretation_focus", []) or []
+                if interpretation_focus:
+                    st.markdown("**Your explanation must cover:** " + " · ".join(str(item) for item in interpretation_focus))
                 interpretation_text = st.text_area(
-                    "Practical interpretation",
+                    "Practical interpretation response",
                     value=practice_submission.get("interpretation", ""),
                     height=135,
                     key=f"{run_state['run_id']}_practice_interpretation",
-                    help=practice_exercise.get("interpretation_prompt", "Explain what the result means."),
+                    label_visibility="collapsed",
                 )
 
                 updated_practice_submission = {

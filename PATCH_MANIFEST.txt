@@ -1,12 +1,16 @@
-Patch 038 Cumulative . Apply this package only.
+Patch 039 . Tutor Experience and Curated Resource Shelf
+Baseline: deployed Patch 038 state, confirmed by 28-topic curriculum and mlf_022 active screen.
 
-Includes:
-- Previously unapplied Patch 037 curriculum, checkpoint and capstone content.
-- Teaching-to-evaluation contract alignment for mlf_019 and blueprint-backed V2 lessons.
-- Verify Draft and coaching corrections.
-- Code Lab sandbox support for sorted/set required by the checkpoint exercise.
+Replace/add in GitHub repository root:
+- app.py                                    [replace]
+- src/agents/lesson_booster.py              [replace]
+- src/practice/v2_exercise_bank.py          [replace]
+- src/utils/supabase_store.py               [replace]
+- src/blueprints/tutor_experience.py        [add]
+- docs/PATCH_039_TUTOR_EXPERIENCE_AND_RESOURCE_SHELF.md [add]
+- supabase/sql/039_tutor_experience_curated_resource_shelf.sql [add]
 
-Deployment order:
-1. Apply files to GitHub repository and push to deploy Streamlit Cloud.
-2. After successful deployment, run supabase/sql/038_cumulative_v2_ml_architect_completion_teaching_contract.sql.
-3. Do not apply the earlier Patch 037 ZIP or SQL separately.
+Run after successful Streamlit Cloud deployment:
+- supabase/sql/039_tutor_experience_curated_resource_shelf.sql
+
+Do not re-run Patch 038 SQL as part of this patch. Patch 039 does not modify curriculum or progress.
