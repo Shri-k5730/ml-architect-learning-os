@@ -31,7 +31,7 @@ from src.schemas import (
 )
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
-from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
+from src.utils.supabase_store import append_event, upsert_artifact, upsert_run, fetch_topic_learning_design
 from src.utils.curriculum_catalog import load_topic_catalog_dicts
 from src.utils.tracker import read_progress_rows
 from src.practice.exercise_bank import build_practice_submission_template, get_exercise_for_topic
@@ -40,6 +40,12 @@ from src.checkpoints.checkpoint_bank import (
     build_checkpoint_assessment,
     build_checkpoint_concept_note,
     is_checkpoint_topic,
+)
+from src.blueprints.learning_design import (
+    get_bundled_learning_design,
+    design_to_concept_note,
+    design_to_architect_note,
+    design_to_assessment,
 )
 from src.blueprints.advanced_ml import (
     blueprint_context,
@@ -576,6 +582,7 @@ def main() -> None:
     selected = select_topic(requested_topic_id=requested_topic_id)
     topic = get_topic_by_id(topic_catalog, selected.selected_topic_id)
     run_id = generate_run_id(topic.topic_id)
+    learning_design = fetch_topic_learning_design(topic.topic_id) or get_bundled_learning_design(topic.topic_id)
 
     run_state = RunState(
         run_id=run_id,
@@ -594,7 +601,29 @@ def main() -> None:
     write_log(run_id, f"Lesson started for {topic.topic_id}")
     write_log(run_id, f"Selection reason: {selected.reason}")
 
-    if is_checkpoint_topic(topic.topic_id):
+    if learning_design:
+        concept_note = design_to_concept_note(learning_design)
+        architect_note = design_to_architect_note(learning_design)
+        assessment = design_to_assessment(learning_design)
+        teacher_diagnostics = {
+            "status": "topic_specific_learning_design",
+            "design_version": learning_design.get("design_version", "unknown"),
+            "message": "Lesson teaching and assessment are driven by the same published evidence design.",
+        }
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_json(f"runs/{run_id}/learning_design.json", learning_design)
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Lesson generated from topic-specific tutor and evidence design")
+    elif is_checkpoint_topic(topic.topic_id):
         concept_note = build_checkpoint_concept_note(topic)
         teacher_diagnostics = {
             "status": "checkpoint_static_content",
@@ -769,7 +798,9 @@ def main() -> None:
             practice_exercise=practice_exercise,
             practice_submission_template=practice_submission_template,
         )
-        if has_blueprint(topic.topic_id):
+        if learning_design:
+            upsert_artifact(run_id, "learning_design", topic.topic_id, payload=learning_design)
+        elif has_blueprint(topic.topic_id):
             upsert_artifact(run_id, "lesson_blueprint", topic.topic_id, payload=blueprint_context(topic.topic_id))
         write_log(run_id, "Supabase persistence completed for lesson start.")
     except Exception as exc:

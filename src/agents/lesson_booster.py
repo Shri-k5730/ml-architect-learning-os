@@ -5,6 +5,8 @@ from typing import Any, Dict, List
 from src.agents.mcq_quality import get_quality_mcqs
 from src.blueprints.advanced_ml import blueprint_to_booster
 from src.blueprints.tutor_experience import get_application_drill
+from src.blueprints.learning_design import get_bundled_learning_design, design_to_booster
+from src.utils.supabase_store import fetch_topic_learning_design
 
 
 # Study Booster is a deterministic, copy-safe learning layer.
@@ -465,6 +467,26 @@ def _mission_bridge_from_questions(booster: Dict[str, Any], questions: List[Dict
 def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> Dict[str, Any]:
     """Return copy-safe pre-mission support aligned to final missions."""
     title = concept_note.get("title", topic_id)
+    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    if learning_design:
+        authored = design_to_booster(learning_design)
+        questions = assessment_doc.get("questions", []) or []
+        # Preserve stored active-run questions, while applying the upgraded teaching and MCQs immediately.
+        authored["mission_bridge"] = [
+            {
+                "mission_type": q.get("type", "mission"),
+                "question_id": q.get("question_id", ""),
+                "tested_skill": next((t.get("purpose", "") for t in learning_design.get("evidence_tasks", []) if t.get("question_id") == q.get("question_id")), "Demonstrate reasoning for the exact scenario."),
+                "use_from_booster": next((t.get("response_shape", "") for t in learning_design.get("evidence_tasks", []) if t.get("question_id") == q.get("question_id")), "Answer the question directly."),
+                "required_demonstration": next((t.get("expected_focus", []) for t in learning_design.get("evidence_tasks", []) if t.get("question_id") == q.get("question_id")), q.get("expected_focus", [])),
+                "not_required": "Do not add unrelated architecture vocabulary or thesis-style filler.",
+                "unsafe_leap": learning_design.get("misconception", ""),
+            } for q in questions
+        ]
+        authored["application_prompt"] = learning_design.get("diagnostic_drill", {}).get("question", "")
+        authored["application_reveal"] = learning_design.get("diagnostic_drill", {}).get("reveal", "")
+        authored["learning_design"] = learning_design
+        return authored
     base = dict(ADVANCED_ML_BOOSTERS.get(topic_id, {}))
     blueprint_base = blueprint_to_booster(topic_id) or {}
 

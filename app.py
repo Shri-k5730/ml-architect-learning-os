@@ -25,9 +25,10 @@ from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
 from src.agents.writing_assist import analyze_answer_text
 from src.agents.tutor_narrative import get_tutor_narrative
+from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources
+from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources, fetch_topic_learning_design
 from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
 
 
@@ -133,10 +134,10 @@ def _render_session_heartbeat_status() -> None:
             gap: 0.45rem;
             border-radius: 999px;
             padding: 0.42rem 0.76rem;
-            background: rgba(15, 23, 42, 0.78);
+            background: #ffffff;
             border: 1px solid rgba(34, 197, 94, 0.30);
             box-shadow: 0 14px 34px rgba(34, 197, 94, 0.08);
-            color: #dbeafe;
+            color: #344158;
             font-size: 13px;
             font-weight: 750;
             white-space: nowrap;
@@ -149,11 +150,11 @@ def _render_session_heartbeat_status() -> None:
             box-shadow: 0 0 0 rgba(34, 197, 94, 0.55);
             animation: heartbeatPulse 1.8s infinite;
           }}
-          .heartbeat-main {{ color: #bbf7d0; }}
-          .heartbeat-muted {{ color: #94a3b8; font-weight: 650; }}
-          .heartbeat-separator {{ color: #64748b; }}
+          .heartbeat-main {{ color: #167348; }}
+          .heartbeat-muted {{ color: #59677e; font-weight: 650; }}
+          .heartbeat-separator {{ color: #708098; }}
           #mlos-ist-clock {{
-            color: #f8fafc;
+            color: #172033;
             font-variant-numeric: tabular-nums;
             letter-spacing: 0.02em;
           }}
@@ -248,394 +249,77 @@ def inject_theme() -> None:
     st.markdown(
         """
         <style>
+        :root {
+            --bg: #f6f8fc;
+            --panel: #ffffff;
+            --panel-soft: #f1f5fb;
+            --line: #dbe4f0;
+            --text: #172033;
+            --muted: #59677e;
+            --primary: #205ecf;
+            --primary-soft: #e7efff;
+            --teal: #087f78;
+            --teal-soft: #e7f7f4;
+            --risk: #9a5800;
+            --risk-soft: #fff5e4;
+            --success: #167348;
+        }
         html { scroll-behavior: smooth; }
-
-        #MainMenu { visibility: hidden; }
-        footer { visibility: hidden; }
-        header[data-testid="stHeader"] {
-            height: 0rem;
-            min-height: 0rem;
-            background: transparent;
+        #MainMenu, footer, div[data-testid="stDecoration"], div[data-testid="stStatusWidget"] { visibility: hidden; display: none; }
+        header[data-testid="stHeader"] { height: 0rem; min-height: 0rem; background: transparent; }
+        div[data-testid="stToolbar"] { visibility: hidden; height: 0rem; position: fixed; }
+        body, .stApp, [data-testid="stAppViewContainer"] {
+            background: linear-gradient(145deg, #f8faff 0%, #f3f7fc 48%, #eef4fb 100%);
+            color: var(--text);
         }
-        div[data-testid="stToolbar"] {
-            visibility: hidden;
-            height: 0rem;
-            position: fixed;
-        }
-        div[data-testid="stDecoration"] { display: none; }
-        div[data-testid="stStatusWidget"] { display: none; }
-
-        .session-heartbeat {
-            display: flex;
-            justify-content: flex-end;
-            align-items: center;
-            gap: 0.55rem;
-            margin: -0.35rem 0 0.75rem 0;
-            color: #cbd5e1;
-            font-size: 0.84rem;
-            font-weight: 750;
-        }
-        .session-heartbeat-card {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            border-radius: 999px;
-            padding: 0.42rem 0.72rem;
-            background: rgba(15, 23, 42, 0.72);
-            border: 1px solid rgba(34, 197, 94, 0.26);
-            box-shadow: 0 14px 34px rgba(34, 197, 94, 0.08);
-        }
-        .heartbeat-dot {
-            width: 0.62rem;
-            height: 0.62rem;
-            border-radius: 999px;
-            background: #22c55e;
-            box-shadow: 0 0 0 rgba(34, 197, 94, 0.55);
-            animation: heartbeatPulse 1.8s infinite;
-        }
-        @keyframes heartbeatPulse {
-            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55); }
-            70% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
-        }
-
-        body {
-            background:
-                radial-gradient(circle at top left, rgba(124, 58, 237, 0.18), transparent 34%),
-                radial-gradient(circle at top right, rgba(14, 165, 233, 0.14), transparent 30%),
-                linear-gradient(135deg, #020617 0%, #0f172a 45%, #111827 100%);
-            color: #e5e7eb;
-        }
-
-        .stApp {
-            background:
-                radial-gradient(circle at 10% 0%, rgba(124, 58, 237, 0.18), transparent 28%),
-                radial-gradient(circle at 90% 8%, rgba(56, 189, 248, 0.14), transparent 26%),
-                linear-gradient(135deg, #020617 0%, #0f172a 50%, #111827 100%);
-        }
-
-        .block-container {
-            padding-top: 1.25rem;
-            padding-bottom: 3rem;
-            max-width: 1480px;
-        }
-
+        .block-container { padding-top: 1.05rem; padding-bottom: 3rem; max-width: 1440px; }
         .main-title {
-            font-size: 2.75rem;
-            font-weight: 900;
-            letter-spacing: -0.045em;
-            background: linear-gradient(90deg, #f8fafc 0%, #c4b5fd 45%, #7dd3fc 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.2rem;
+            font-size: 2.55rem; font-weight: 900; letter-spacing: -0.045em;
+            color: #14326b; margin-bottom: 0.2rem;
         }
-
-        .sub-title {
-            color: #94a3b8;
-            font-size: 1.02rem;
-            margin-bottom: 1.25rem;
-        }
-
-        div[data-testid="stMetric"] {
-            background: rgba(15, 23, 42, 0.72);
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            padding: 1rem;
-            border-radius: 18px;
-            box-shadow: 0 18px 45px rgba(0, 0, 0, 0.25);
-            backdrop-filter: blur(14px);
-        }
-
-        div[data-testid="stMetric"] label { color: #94a3b8 !important; }
-        div[data-testid="stMetricValue"] { color: #f8fafc !important; font-weight: 800; }
-
-        .stButton > button {
-            border-radius: 14px;
-            border: 1px solid rgba(167, 139, 250, 0.35);
-            background: linear-gradient(135deg, rgba(124, 58, 237, 0.95), rgba(14, 165, 233, 0.85));
-            color: #ffffff;
-            font-weight: 750;
-            letter-spacing: 0.01em;
-            padding: 0.72rem 1rem;
-            box-shadow: 0 14px 32px rgba(59, 130, 246, 0.22);
-            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
-        }
-
-        .stButton > button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 18px 42px rgba(124, 58, 237, 0.36);
-            border-color: rgba(221, 214, 254, 0.8);
-        }
-
-        .stButton > button:disabled {
-            background: rgba(30, 41, 59, 0.75);
-            border: 1px solid rgba(100, 116, 139, 0.24);
-            color: #64748b;
-            box-shadow: none;
-            transform: none;
-        }
-
-        div[data-testid="stTabs"] button {
-            border-radius: 999px;
-            color: #cbd5e1;
-            padding: 0.65rem 1.1rem;
-            font-weight: 700;
-        }
-
-        div[data-testid="stTabs"] button[aria-selected="true"] {
-            background: rgba(124, 58, 237, 0.25);
-            color: #ffffff;
-            border: 1px solid rgba(196, 181, 253, 0.35);
-        }
-
-        div[data-testid="stTextArea"] textarea {
-            background: rgba(15, 23, 42, 0.78);
-            border: 1px solid rgba(148, 163, 184, 0.24);
-            color: #f8fafc;
-            border-radius: 16px;
-            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
-        }
-
-        div[data-testid="stTextArea"] textarea:focus {
-            border-color: rgba(124, 58, 237, 0.8);
-            box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.18);
-        }
-
-        .level-card {
-            border-radius: 22px;
-            padding: 1rem;
-            min-height: 205px;
-            background:
-                linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.78)),
-                radial-gradient(circle at top right, rgba(124, 58, 237, 0.18), transparent 40%);
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.30);
-            transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-        }
-
-        .level-card:hover {
-            transform: translateY(-3px);
-            border-color: rgba(167, 139, 250, 0.55);
-            box-shadow: 0 28px 80px rgba(76, 29, 149, 0.32);
-        }
-
-        .level-card-selected {
-            border-color: rgba(125, 211, 252, 0.70);
-            box-shadow: 0 28px 80px rgba(14, 165, 233, 0.22);
-        }
-
-        .level-id {
-            font-size: 0.78rem;
-            color: #a78bfa;
-            font-weight: 800;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            margin-bottom: 0.55rem;
-        }
-
-        .level-title {
-            font-size: 1.08rem;
-            line-height: 1.28;
-            font-weight: 850;
-            color: #f8fafc;
-            margin-bottom: 0.85rem;
-        }
-
-        .level-status {
-            display: inline-flex;
-            align-items: center;
-            border-radius: 999px;
-            padding: 0.28rem 0.62rem;
-            font-size: 0.82rem;
-            font-weight: 750;
-            color: #e0f2fe;
-            background: rgba(14, 165, 233, 0.14);
-            border: 1px solid rgba(125, 211, 252, 0.25);
-            margin-bottom: 0.75rem;
-        }
-
-        .level-stars {
-            font-size: 1.22rem;
-            letter-spacing: 0.06em;
-            color: #facc15;
-            margin-bottom: 0.65rem;
-            text-shadow: 0 0 24px rgba(250, 204, 21, 0.25);
-        }
-
-        .level-badge {
-            color: #cbd5e1;
-            font-size: 0.92rem;
-            font-weight: 650;
-        }
-
-
-
-        .app-header-row {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 1rem;
-            margin-bottom: 1rem;
-        }
-
-        .status-strip {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.55rem;
-            margin: 0.75rem 0 1.2rem 0;
-        }
-
-        .status-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            border-radius: 999px;
-            padding: 0.42rem 0.72rem;
-            background: rgba(15, 23, 42, 0.72);
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            color: #cbd5e1;
-            font-size: 0.84rem;
-            font-weight: 700;
-        }
-
-        .current-topic-hero {
-            border-radius: 24px;
-            padding: 1.2rem 1.25rem;
-            margin-bottom: 1rem;
-            background:
-                linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.80)),
-                radial-gradient(circle at top right, rgba(14, 165, 233, 0.16), transparent 36%);
-            border: 1px solid rgba(148, 163, 184, 0.18);
-            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.26);
-        }
-
-        .topic-kicker {
-            color: #7dd3fc;
-            font-size: 0.78rem;
-            font-weight: 850;
-            text-transform: uppercase;
-            letter-spacing: 0.11em;
-            margin-bottom: 0.38rem;
-        }
-
-        .topic-heading {
-            color: #f8fafc;
-            font-size: 1.75rem;
-            line-height: 1.15;
-            font-weight: 900;
-            letter-spacing: -0.03em;
-            margin-bottom: 0.5rem;
-        }
-
-        .topic-subline {
-            color: #94a3b8;
-            font-size: 0.95rem;
-            line-height: 1.45;
-        }
-
-        .workflow-strip {
-            display: flex;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-            margin: 0.75rem 0 0 0;
-        }
-
-        .workflow-step {
-            border-radius: 999px;
-            padding: 0.42rem 0.72rem;
-            background: rgba(124, 58, 237, 0.13);
-            border: 1px solid rgba(167, 139, 250, 0.22);
-            color: #ddd6fe;
-            font-size: 0.82rem;
-            font-weight: 760;
-        }
-
-        .section-card {
-            border-radius: 22px;
-            padding: 1rem 1.05rem;
-            margin-bottom: 0.85rem;
-            background: rgba(15, 23, 42, 0.70);
-            border: 1px solid rgba(148, 163, 184, 0.16);
-            box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18);
-        }
-
-        .section-card h4 {
-            margin: 0 0 0.45rem 0;
-            color: #f8fafc;
-            font-size: 1rem;
-            font-weight: 860;
-        }
-
-        .section-card p, .section-card li {
-            color: #cbd5e1;
-            line-height: 1.55;
-            font-size: 0.95rem;
-        }
-
-        .section-card ul {
-            margin: 0.45rem 0 0 1.1rem;
-            padding: 0;
-        }
-
-        .two-card-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 0.85rem;
-            margin-bottom: 0.2rem;
-        }
-
-        .callout-good {
-            border-color: rgba(34, 197, 94, 0.26);
-            background: linear-gradient(135deg, rgba(20, 83, 45, 0.32), rgba(15, 23, 42, 0.72));
-        }
-
-        .callout-risk {
-            border-color: rgba(251, 191, 36, 0.26);
-            background: linear-gradient(135deg, rgba(113, 63, 18, 0.30), rgba(15, 23, 42, 0.72));
-        }
-
-        .mission-card {
-            border-radius: 20px;
-            padding: 0.95rem 1rem;
-            margin-bottom: 0.95rem;
-            background: rgba(2, 6, 23, 0.42);
-            border: 1px solid rgba(148, 163, 184, 0.14);
-        }
-
-        .mission-card-title {
-            color: #f8fafc;
-            font-size: 0.98rem;
-            font-weight: 850;
-            margin-bottom: 0.35rem;
-        }
-
-        .mission-question {
-            color: #cbd5e1;
-            line-height: 1.48;
-            margin-bottom: 0.7rem;
-        }
-
-        .save-panel {
-            border-radius: 22px;
-            padding: 1rem;
-            background: rgba(15, 23, 42, 0.76);
-            border: 1px solid rgba(125, 211, 252, 0.18);
-            box-shadow: 0 18px 48px rgba(14, 165, 233, 0.10);
-            margin-bottom: 1rem;
-        }
-
-        .small-muted {
-            color: #94a3b8;
-            font-size: 0.86rem;
-            line-height: 1.45;
-        }
-
-        @media (max-width: 900px) {
-            .two-card-grid { grid-template-columns: 1fr; }
-            .topic-heading { font-size: 1.35rem; }
-        }
-
-        .stAlert { border-radius: 18px; }
-        hr { border-color: rgba(148, 163, 184, 0.16); }
+        .sub-title, .small-muted, .topic-subline { color: var(--muted); }
+        .session-heartbeat { display:flex; justify-content:flex-end; align-items:center; gap:.55rem; margin:-.35rem 0 .75rem; color:var(--muted); font-size:.84rem; font-weight:700; }
+        .session-heartbeat-card { display:inline-flex; align-items:center; gap:.5rem; border-radius:999px; padding:.42rem .72rem; background:#ffffff; border:1px solid #d4e6dd; box-shadow:0 6px 18px rgba(16, 42, 67, .05); }
+        .heartbeat-dot { width:.62rem; height:.62rem; border-radius:999px; background:#22a06b; box-shadow:0 0 0 rgba(34,160,107,.45); animation:heartbeatPulse 1.8s infinite; }
+        @keyframes heartbeatPulse { 0% { box-shadow:0 0 0 0 rgba(34,160,107,.42); } 70% { box-shadow:0 0 0 8px rgba(34,160,107,0); } 100% { box-shadow:0 0 0 0 rgba(34,160,107,0); } }
+        div[data-testid="stMetric"] { background:var(--panel); border:1px solid var(--line); padding:1rem; border-radius:18px; box-shadow:0 8px 24px rgba(21, 42, 73, .06); }
+        div[data-testid="stMetric"] label { color:var(--muted) !important; }
+        div[data-testid="stMetricValue"] { color:var(--text) !important; font-weight:800; }
+        .stButton > button { border-radius:13px; border:1px solid #bdd3fb; background:#205ecf; color:#fff; font-weight:750; padding:.68rem 1rem; box-shadow:0 6px 14px rgba(32,94,207,.16); transition:all .16s ease; }
+        .stButton > button:hover { transform:translateY(-1px); background:#174ead; border-color:#174ead; box-shadow:0 10px 18px rgba(32,94,207,.20); }
+        .stButton > button:disabled { background:#eef2f7; border-color:#dbe4f0; color:#8c99ac; box-shadow:none; transform:none; }
+        div[data-testid="stTabs"] button { border-radius:999px; color:#53637c; padding:.62rem 1rem; font-weight:700; }
+        div[data-testid="stTabs"] button[aria-selected="true"] { background:var(--primary-soft); color:#174ead; border:1px solid #bfd4ff; }
+        div[data-testid="stTextArea"] textarea, div[data-baseweb="select"] > div, .stTextInput input { background:#ffffff; border:1px solid #d5dfec; color:var(--text); border-radius:14px; }
+        div[data-testid="stTextArea"] textarea:focus { border-color:#7da8f4; box-shadow:0 0 0 3px rgba(32,94,207,.11); }
+        .level-card { border-radius:20px; padding:1rem; min-height:205px; background:#ffffff; border:1px solid var(--line); box-shadow:0 8px 24px rgba(21,42,73,.05); transition:all .16s ease; }
+        .level-card:hover { transform:translateY(-2px); border-color:#b7cdef; box-shadow:0 12px 28px rgba(21,42,73,.08); }
+        .level-card-selected { border-color:#7aa5ef; box-shadow:0 10px 26px rgba(32,94,207,.10); }
+        .level-id, .topic-kicker { color:#3166c0; font-size:.78rem; font-weight:850; text-transform:uppercase; letter-spacing:.10em; margin-bottom:.45rem; }
+        .level-title { font-size:1.07rem; line-height:1.3; font-weight:850; color:var(--text); margin-bottom:.8rem; }
+        .level-status { display:inline-flex; border-radius:999px; padding:.28rem .62rem; font-size:.82rem; font-weight:750; color:#126782; background:#e9f7fc; border:1px solid #c7e8f4; margin-bottom:.75rem; }
+        .level-stars { font-size:1.2rem; letter-spacing:.06em; color:#d58b00; margin-bottom:.65rem; }
+        .level-badge { color:var(--muted); font-size:.92rem; font-weight:650; }
+        .app-header-row { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; margin-bottom:1rem; }
+        .status-strip { display:flex; flex-wrap:wrap; gap:.55rem; margin:.75rem 0 1.2rem; }
+        .status-pill { display:inline-flex; align-items:center; gap:.35rem; border-radius:999px; padding:.42rem .72rem; background:#ffffff; border:1px solid var(--line); color:var(--muted); font-size:.84rem; font-weight:700; }
+        .current-topic-hero { border-radius:22px; padding:1.15rem 1.22rem; margin-bottom:1rem; background:linear-gradient(135deg, #ffffff, #f2f7ff); border:1px solid #d4e2f6; box-shadow:0 10px 28px rgba(21,42,73,.06); }
+        .topic-heading { color:var(--text); font-size:1.68rem; line-height:1.18; font-weight:900; letter-spacing:-.03em; margin-bottom:.45rem; }
+        .workflow-strip { display:flex; gap:.5rem; flex-wrap:wrap; margin:.75rem 0 0; }
+        .workflow-step { border-radius:999px; padding:.4rem .68rem; background:#eef4ff; border:1px solid #d2e1fc; color:#2456ac; font-size:.82rem; font-weight:760; }
+        .section-card { border-radius:18px; padding:.92rem 1rem; margin-bottom:.78rem; background:#ffffff; border:1px solid var(--line); box-shadow:0 5px 17px rgba(21,42,73,.04); }
+        .section-card h4 { margin:0 0 .42rem; color:var(--text); font-size:1rem; font-weight:850; }
+        .section-card p, .section-card li { color:#344158; line-height:1.54; font-size:.95rem; }
+        .section-card ul { margin:.42rem 0 0 1.05rem; padding:0; }
+        .two-card-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.8rem; margin-bottom:.2rem; }
+        .callout-good { border-color:#b8e6db; background:var(--teal-soft); }
+        .callout-risk { border-color:#f2d298; background:var(--risk-soft); }
+        .mission-card { border-radius:16px; padding:.9rem 1rem; margin:.85rem 0 .6rem; background:#ffffff; border:1px solid var(--line); }
+        .mission-card-title { color:var(--text); font-size:.97rem; font-weight:850; margin-bottom:.35rem; }
+        .mission-question { color:#344158; line-height:1.48; }
+        .save-panel { border-radius:18px; padding:1rem; background:#f1f6ff; border:1px solid #d4e2f6; margin-bottom:1rem; }
+        .stAlert { border-radius:15px; } hr { border-color:#e1e8f2; }
+        @media (max-width: 900px) { .two-card-grid { grid-template-columns:1fr; } .topic-heading { font-size:1.3rem; } .main-title { font-size:2rem; } }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1123,41 +807,49 @@ def persist_practice_submission_to_supabase(
     except Exception:
         pass
 
-def render_answer_pressure(question_type: str, answer_text: str) -> None:
+def _runtime_task_meta(learning_design: Optional[Dict[str, Any]], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return runtime_task_for_question(
+        learning_design,
+        str(item.get("question_id", "")),
+        str(item.get("question", "")),
+    )
+
+
+def render_answer_pressure(question_type: str, answer_text: str, task_meta: Optional[Dict[str, Any]] = None) -> None:
     words = len((answer_text or "").split())
+    minimum = int((task_meta or {}).get("target_min_words", 45))
+    maximum = int((task_meta or {}).get("target_max_words", 105))
+    shape = str((task_meta or {}).get("response_shape", "Answer the exact question directly and show your reasoning."))
     if words == 0:
-        st.caption("Target: 80-140 words. Definition → example → production risk → control.")
+        st.caption(f"Response shape: {shape} Target: {minimum}-{maximum} words.")
         return
-    if words > 180:
-        st.warning(f"{words} words. Too long. Cut repetition and keep only the control/action.")
-    elif words > 140:
-        st.caption(f"{words} words. Acceptable, but tighten if you are repeating definitions.")
-    elif words < 45 and question_type not in {"tiny_hands_on"}:
-        st.caption(f"{words} words. Likely thin. Add one example and one production control.")
+    if words > maximum + 30:
+        st.warning(f"{words} words. The evidence needed here should fit in {minimum}-{maximum} words. Cut repetition.")
+    elif words > maximum:
+        st.caption(f"{words} words. Slightly long for this evidence task; tighten repeated explanation.")
+    elif words < minimum:
+        st.caption(f"{words} words. Check that you demonstrated: {shape}")
     else:
-        st.caption(f"{words} words. Good length. Now make sure it has a concrete control.")
+        st.caption(f"{words} words. Within the range for this evidence task.")
 
 
-
-
-def render_writing_assist_panel(question_type: str, answer_text: str) -> None:
-    """Low-risk writing assist: no rewrite, no answer generation, just noise signals."""
+def render_writing_assist_panel(question_type: str, answer_text: str, task_meta: Optional[Dict[str, Any]] = None) -> None:
+    """Low-risk language assist. It must not become a hidden scoring rubric."""
     analysis = analyze_answer_text(answer_text, question_type)
     if not answer_text:
         return
 
-    status = analysis.get("length_status")
+    minimum = int((task_meta or {}).get("target_min_words", analysis.get("target_min", 45)))
+    maximum = int((task_meta or {}).get("target_max_words", analysis.get("target_max", 105)))
     word_count = analysis.get("word_count", 0)
-    target_min = analysis.get("target_min", 80)
-    target_max = analysis.get("target_max", 140)
 
-    with st.expander("Writing assist . spelling, length, and precision", expanded=analysis.get("has_language_noise", False)):
-        if status == "good":
-            st.success(f"Length: {word_count} words. Target {target_min}-{target_max}. Good range.")
-        elif status in {"long", "essay"}:
-            st.warning(f"Length: {word_count} words. Target {target_min}-{target_max}. {analysis.get('length_hint')}")
+    with st.expander("Writing assist . language and technical precision", expanded=analysis.get("has_language_noise", False)):
+        if minimum <= word_count <= maximum:
+            st.success(f"Length: {word_count} words. Suggested range for this task: {minimum}-{maximum}.")
+        elif word_count > maximum:
+            st.warning(f"Length: {word_count} words. Suggested range for this task: {minimum}-{maximum}. Remove repeated explanation, not necessary evidence.")
         else:
-            st.info(f"Length: {word_count} words. Target {target_min}-{target_max}. {analysis.get('length_hint')}")
+            st.info(f"Length: {word_count} words. Suggested range for this task: {minimum}-{maximum}. Check whether the required reasoning is present.")
 
         suggestions = analysis.get("spelling_suggestions", []) or []
         if suggestions:
@@ -1167,19 +859,13 @@ def render_writing_assist_panel(question_type: str, answer_text: str) -> None:
         else:
             st.caption("No common spelling hints detected.")
 
-        repeated = analysis.get("repeated_phrases", []) or []
-        if repeated:
-            st.markdown("**Repeated generic phrases**")
-            for phrase in repeated:
-                st.markdown(f"- `{phrase}` . Replace with the exact mechanism or control.")
-
         hints = analysis.get("technical_precision_hints", []) or []
         if hints:
             st.markdown("**Technical wording hints**")
             for hint in hints:
                 st.info(str(hint))
 
-        st.caption("This assist does not rewrite your answer or add concepts. It only flags language noise and precision risks before evaluation.")
+        st.caption("Length is guidance only. Evaluation should score the reasoning demonstrated for this task, not vocabulary or essay size.")
 
 
 def load_relative_json_or_none(relative_path: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -1652,41 +1338,46 @@ def render_answer_coaching_panel(run_dir: Path) -> None:
 
 def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
     summary = verification.get("summary", {})
+    is_guardrail = str(verification.get("mode", "")).startswith("evidence_guardrail")
 
-    st.markdown("### Draft Verification")
-    st.caption("This is copy-safe guidance. It gives gaps and next actions, not final answers.")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Readiness Avg", summary.get("readiness_average", summary.get("likely_average", "-")))
-    c2.metric("Weak Drafts", summary.get("weak_count", "-"))
-    c3.metric("Partial Drafts", summary.get("partial_count", "-"))
-    st.caption("Readiness Avg is not a star prediction. Final scoring may be stricter after full evaluation.")
+    st.markdown("### Draft Guardrail" if is_guardrail else "### Draft Verification")
+    if is_guardrail:
+        st.caption("This checks for empty responses and known technical/unsafe claims. It does not predict stars or reward keywords.")
+        c1, c2 = st.columns(2)
+        c1.metric("Blocking Issues", summary.get("weak_count", 0))
+        c2.metric("Responses Checked", len(verification.get("items", []) or []))
+    else:
+        st.caption("This is copy-safe guidance. It gives gaps and next actions, not final answers.")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Readiness Avg", summary.get("readiness_average", summary.get("likely_average", "-")))
+        c2.metric("Weak Drafts", summary.get("weak_count", "-"))
+        c3.metric("Partial Drafts", summary.get("partial_count", "-"))
+        st.caption("Readiness Avg is not a star prediction. Final scoring may be stricter after full evaluation.")
 
     recommendation = summary.get("recommendation", "")
     if summary.get("weak_count", 0):
         st.error(recommendation)
+    elif is_guardrail:
+        st.success(recommendation)
     elif summary.get("partial_count", 0):
         st.warning(recommendation)
     else:
         st.success(recommendation)
 
-    concepts = verification.get("core_concepts_to_check", []) or []
-    if concepts:
-        with st.expander("Concepts to verify before final submission", expanded=False):
-            for concept in concepts:
-                st.markdown(f"- {concept}")
-
     for item in verification.get("items", []) or []:
-        with st.expander(
-            f"{item.get('question_id', '')} . {item.get('verdict', '')} . readiness {item.get('readiness_score', item.get('likely_score', '-'))}/5",
-            expanded=item.get("readiness_score", item.get("likely_score", 5)) <= 3,
-        ):
+        task = item.get("evidence_task", {}) or {}
+        title = task.get("label", item.get("question_id", ""))
+        issue_count = len(item.get("misconceptions", []) or []) + len(item.get("coverage_gaps", []) or [])
+        exp_label = f"{item.get('question_id', '')} . {title}" + (f" . {issue_count} issue(s)" if issue_count else " . no blocking issue detected")
+        with st.expander(exp_label, expanded=issue_count > 0):
             st.markdown("**Question**")
             st.write(item.get("question", ""))
+            if task.get("response_shape"):
+                st.caption("Evidence shape: " + str(task.get("response_shape")))
 
             misconceptions = item.get("misconceptions", []) or []
             if misconceptions:
-                st.markdown("**Possible Misconception**")
+                st.markdown("**Technical or unsafe claim to fix**")
                 for finding in misconceptions:
                     st.warning(
                         f"Evidence: `{finding.get('evidence', '')}`  \n"
@@ -1696,22 +1387,23 @@ def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
 
             gaps = item.get("coverage_gaps", []) or []
             if gaps:
-                st.markdown("**Gaps to fix**")
+                st.markdown("**Action needed**")
                 for gap in gaps:
                     st.markdown(f"- {gap}")
 
             writing = item.get("writing_assist", {}) or {}
-            if writing.get("has_language_noise"):
-                st.markdown("**Writing assist**")
-                st.caption(writing.get("length_hint", ""))
-                for sug in writing.get("spelling_suggestions", [])[:5]:
+            suggestions = writing.get("spelling_suggestions", []) or []
+            hints = writing.get("technical_precision_hints", []) or []
+            if suggestions or hints:
+                st.markdown("**Language and precision assist**")
+                for sug in suggestions[:5]:
                     st.markdown(f"- `{sug.get('original')}` → `{sug.get('suggestion')}`")
-                for hint in writing.get("technical_precision_hints", [])[:3]:
+                for hint in hints[:3]:
                     st.info(str(hint))
 
-            st.markdown("**Next improvement**")
-            st.info(item.get("next_improvement", ""))
-
+            if not is_guardrail:
+                st.markdown("**Next improvement**")
+                st.info(item.get("next_improvement", ""))
 
 
 
@@ -1760,9 +1452,9 @@ def render_topic_hero(run_state: Dict[str, Any], concept_note: Dict[str, Any], m
             <div class="topic-subline">Complete the flow left to right: learn, bridge the concept to missions, check understanding, write and verify drafts, run practical work, then submit.</div>
             <div class="workflow-strip">
                 <span class="workflow-step">1 Learn</span>
-                <span class="workflow-step">2 Apply It</span>
+                <span class="workflow-step">2 Check It</span>
                 <span class="workflow-step">3 MCQs</span>
-                <span class="workflow-step">4 Missions + Verify</span>
+                <span class="workflow-step">4 Evidence + Verify</span>
                 <span class="workflow-step">5 Code Lab</span>
                 <span class="workflow-step">6 Submit</span>
             </div>
@@ -1833,6 +1525,67 @@ def render_topic_resources_panel(topic_id: str) -> None:
 
 
 
+def load_topic_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
+    """Supabase-authored design first; bundled design is a deploy-safe fallback."""
+    return fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+
+
+def render_learning_design_panel(topic_id: str) -> bool:
+    design = load_topic_learning_design(topic_id)
+    if not design:
+        return False
+
+    st.markdown("### Learn")
+    st.caption("Built from the learning objective first. Assessment asks only for the evidence taught here.")
+    render_static_card("By the end of this lesson, you should be able to", design.get("learning_objective", ""), "callout-good")
+
+    prerequisite = str(design.get("prerequisite_bridge", "")).strip()
+    if prerequisite:
+        with st.expander("Before this concept . quick bridge", expanded=False):
+            st.write(prerequisite)
+
+    st.markdown("#### Build the idea")
+    for idx, step in enumerate(design.get("concept_steps", []) or [], start=1):
+        render_static_card(f"{idx}. {step.get('heading', 'Step')}", step.get("body", ""))
+
+    example = design.get("worked_example", {}) or {}
+    if example:
+        st.markdown("#### Worked example")
+        render_static_card("Scenario", example.get("scenario", ""), "callout-good")
+        rows = example.get("rows", []) or []
+        if rows:
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        if example.get("takeaway"):
+            st.info(str(example.get("takeaway")))
+
+    with st.expander("Common trap and architect extension", expanded=False):
+        if design.get("misconception"):
+            render_static_card("Do not conclude this", design.get("misconception"), "callout-risk")
+        if design.get("architect_extension"):
+            render_static_card("Architect extension", design.get("architect_extension"), "callout-good")
+    return True
+
+
+def render_evidence_task_overview(learning_design: Optional[Dict[str, Any]], assessment_doc: Dict[str, Any]) -> None:
+    if not learning_design:
+        return
+    st.markdown("### Evidence tasks")
+    st.caption("These are different proofs of understanding. They are not five copies of the same essay template.")
+    questions = assessment_doc.get("questions", []) or []
+    for idx, question in enumerate(questions, start=1):
+        meta = runtime_task_for_question(learning_design, str(question.get("question_id", "")), str(question.get("question", "")))
+        if not meta:
+            continue
+        with st.expander(f"Task {idx} . {meta.get('label', question.get('type', 'Evidence'))}", expanded=False):
+            st.write(meta.get("purpose", ""))
+            st.markdown(f"**Response shape:** {meta.get('response_shape', 'Answer directly.')}  ")
+            st.caption(f"Suggested length: {meta.get('target_min_words', 45)}-{meta.get('target_max_words', 105)} words. Length is guidance, not the scoring rule.")
+            focus = meta.get("expected_focus", []) or []
+            if focus:
+                st.markdown("**Evidence this task should reveal:** " + " · ".join(str(x) for x in focus))
+    st.info(str(learning_design.get("assessment_principle", "")))
+
+
 def render_tutor_narrative_panel(topic_id: str) -> bool:
     """Render one coherent lesson, while moving scoring detail out of the teaching flow."""
     narrative = get_tutor_narrative(topic_id)
@@ -1875,72 +1628,49 @@ def render_tutor_narrative_panel(topic_id: str) -> bool:
 
 
 def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
-    st.markdown("### Apply It")
-    st.caption("One short reasoning drill before MCQs and missions. This tab should not repeat the lesson.")
+    learning_design = booster.get("learning_design") if isinstance(booster, dict) else None
+    st.markdown("### Check It")
+    st.caption("One diagnostic check before assessment. Use it to see whether the central idea has clicked.")
 
     prompt = booster.get("application_prompt", "")
     reveal = booster.get("application_reveal", "")
     if prompt:
-        render_static_card("Decision Drill", prompt, "callout-good")
-        with st.expander("Reveal reasoning after attempting it", expanded=False):
+        render_static_card("Think before revealing", prompt, "callout-good")
+        with st.expander("Reveal the reasoning", expanded=False):
             st.write(reveal)
     else:
-        render_static_card("Application Prompt", booster.get("production_trap", ""), "callout-risk")
-        st.caption("Use the concept learned in Tab 1 to state the safe decision and the reason.")
+        render_static_card("Think before proceeding", booster.get("production_trap", ""), "callout-risk")
 
-    with st.expander("Response scaffold . open only if stuck", expanded=False):
-        answer_frame = booster.get("answer_frame", []) or []
-        if answer_frame:
-            render_static_card("Use this structure", answer_frame)
-        focus = booster.get("mission_focus", []) or []
-        if focus:
-            render_static_card("Concepts that will recur in missions", focus)
+    if learning_design:
+        st.caption("This check is not scored. The assessed evidence is shown only in the Missions tab.")
+    else:
+        with st.expander("Response scaffold . open only if stuck", expanded=False):
+            answer_frame = booster.get("answer_frame", []) or []
+            if answer_frame:
+                render_static_card("Use this structure", answer_frame)
 
 
 def render_mission_bridge(booster: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
+    learning_design = booster.get("learning_design") if isinstance(booster, dict) else None
+    if learning_design:
+        render_evidence_task_overview(learning_design, assessment_doc)
+        return
+
     bridge_items = booster.get("mission_bridge", []) or []
     questions = assessment_doc.get("questions", []) or []
     if not bridge_items and not questions:
         return
-
     st.markdown("### Mission Requirements")
-    st.caption("Open the requirement for the mission you are answering. These are published scoring requirements, not additional lesson content.")
-
-    bridge_by_type = {
-        str(item.get("mission_type", "")): item
-        for item in bridge_items
-        if isinstance(item, dict)
-    }
-
+    st.caption("Open the requirement for the mission you are answering.")
+    bridge_by_type = {str(item.get("mission_type", "")): item for item in bridge_items if isinstance(item, dict)}
     for idx, question in enumerate(questions, start=1):
         qtype = str(question.get("type", "mission"))
         bridge = bridge_by_type.get(qtype, {})
-        title = qtype.replace("_", " ").title()
-        with st.expander(f"Mission {idx} . {title} . what this is testing", expanded=False):
-            tested = bridge.get("tested_skill") or "Apply the concept to the exact scenario, then state the practical or architectural implication."
-            taught = bridge.get("use_from_booster") or "Use the learning brief, study booster, and the mission scenario. Avoid generic definitions."
-            st.markdown("**Tested skill**")
-            st.write(tested)
-            st.markdown("**Use from booster**")
-            st.info(taught)
+        with st.expander(f"Mission {idx} . {qtype.replace('_', ' ').title()}", expanded=False):
+            st.write(bridge.get("tested_skill") or "Apply the concept to the exact scenario.")
             expected = question.get("expected_focus", []) or []
             if expected:
-                st.markdown("**Evaluator focus**")
-                for item in expected[:4]:
-                    st.markdown(f"- {item}")
-            required = bridge.get("required_demonstration", []) or []
-            if required:
-                st.markdown("**Required demonstration**")
-                for point in required:
-                    st.markdown(f"- {point}")
-            not_required = bridge.get("not_required", "")
-            if not_required:
-                st.markdown("**Not required**")
-                st.caption(not_required)
-            unsafe_leap = bridge.get("unsafe_leap", "")
-            if unsafe_leap:
-                st.markdown("**Unsafe conclusion to avoid**")
-                st.warning(unsafe_leap)
+                st.markdown("**Evidence expected:** " + " · ".join(str(item) for item in expected[:4]))
 
 
 def run_draft_verification_action(
@@ -2399,6 +2129,7 @@ with tabs[1]:
         mission_types = sorted({item["type"] for item in answers_doc["answers"]})
         render_topic_hero(run_state, concept_note, mission_types)
 
+        learning_design = load_topic_learning_design(topic_id)
         booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
 
         artifacts = run_state.get("artifacts", {}) or {}
@@ -2407,7 +2138,7 @@ with tabs[1]:
         practice_submission = None
         updated_practice_submission = None
 
-        current_tabs = ["① Learn", "② Apply It", "③ MCQs", "④ Missions + Verify"]
+        current_tabs = ["① Learn", "② Check It", "③ MCQs", "④ Evidence + Verify"]
         if practice_exercise is not None:
             current_tabs.append("⑤ Code Lab")
             submit_tab_label = "⑥ Submit"
@@ -2417,8 +2148,9 @@ with tabs[1]:
         lesson_tabs = st.tabs(current_tabs)
 
         with lesson_tabs[0]:
-            if not render_tutor_narrative_panel(topic_id):
-                render_learning_brief(concept_note, architect_note)
+            if not render_learning_design_panel(topic_id):
+                if not render_tutor_narrative_panel(topic_id):
+                    render_learning_brief(concept_note, architect_note)
             render_topic_resources_panel(topic_id)
 
         with lesson_tabs[1]:
@@ -2434,31 +2166,35 @@ with tabs[1]:
         }
 
         with lesson_tabs[3]:
-            st.markdown("### Mission Response")
-            st.caption("Answer in your own words. Aim for 80-140 words: definition, example, production risk, control. Do not write essays.")
+            st.markdown("### Evidence Responses")
+            st.caption("Answer only what each task asks. Normal lessons use different evidence tasks, not a repeated essay formula.")
             render_mission_bridge(booster, assessment_doc)
             st.divider()
 
             for i, item in enumerate(answers_doc["answers"], start=1):
-                mission_type = item.get("type", "mission").replace("_", " ").title()
+                task_meta = _runtime_task_meta(learning_design, item)
+                mission_type = (task_meta or {}).get("label") or item.get("type", "evidence").replace("_", " ").title()
                 st.markdown(
                     f"""
                     <div class="mission-card">
-                        <div class="mission-card-title">Mission {i} . {html_text(mission_type)}</div>
+                        <div class="mission-card-title">Task {i} . {html_text(mission_type)}</div>
                         <div class="mission-question">{html_text(item['question'])}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
+                if task_meta and task_meta.get("purpose"):
+                    st.caption(str(task_meta.get("purpose")))
+                max_words = int((task_meta or {}).get("target_max_words", 105))
                 answer_text = st.text_area(
                     label=f"Answer for {item['question_id']}",
                     value=item.get("answer", ""),
-                    height=135,
+                    height=105 if max_words <= 100 else 135,
                     key=f"{run_state['run_id']}_{item['question_id']}",
                     label_visibility="collapsed",
                 )
-                render_answer_pressure(item.get("type", "mission"), answer_text)
-                render_writing_assist_panel(item.get("type", "mission"), answer_text)
+                render_answer_pressure(item.get("type", "mission"), answer_text, task_meta)
+                render_writing_assist_panel(item.get("type", "mission"), answer_text, task_meta)
                 updated_answers["answers"].append(
                     {
                         "question_id": item["question_id"],
@@ -2468,8 +2204,8 @@ with tabs[1]:
                     }
                 )
 
-            st.markdown("### Save + Verify Draft")
-            st.caption("Save and Verify live here because they are part of writing missions. Final submission is separate.")
+            st.markdown("### Save + Verify Evidence")
+            st.caption("Save and Verify stay here so your response work is protected before final evaluation.")
             action_c1, action_c2 = st.columns([1, 1])
             with action_c1:
                 if st.button("Save Answers", use_container_width=True):
@@ -2571,7 +2307,7 @@ with tabs[1]:
             )
 
             if practice_exercise is not None:
-                st.info("Code Lab, if present, is included in final evaluation. Run it before submitting.")
+                st.info("Code Lab, if present, is separate practical evidence and is included in final evaluation. Run it before submitting.")
 
             if st.button("Save + Evaluate", use_container_width=True):
                 save_answers(answer_path, updated_answers)

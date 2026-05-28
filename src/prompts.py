@@ -231,7 +231,9 @@ Evaluation rules:
 15. For a scenario-only tiny_hands_on question that contains no numeric data and asks what to conclude, do not demand a calculation or metric comparison. Evaluate the valid conclusion, invalid conclusion, evidence check, and safe next action.
 16. For architect_decision, demand trigger/evidence/owner/approval/action/monitoring only when that chain was shown in the teaching contract before the learner answered.
 17. If a learner has the correct mechanism but messy grammar, keep the content score intact and mention language only as a communication note.
-18. Decide one action only: pass, borderline, revise, or fail_prereq.
+18. When the payload includes topic_learning_design, treat its learning objective and evidence_tasks as the assessment contract. Do not score by keyword matching, repeated control vocabulary, or response length. A concise answer that demonstrates the required reasoning can score strongly.
+19. For topic_learning_design normal lessons, do not expect every response to contain definition, production risk and control; follow that task's response_shape. Checkpoints and capstone can demand integrated architecture reasoning.
+20. Decide one action only: pass, borderline, revise, or fail_prereq.
 13. Borderline means the learner can progress but should improve the topic later.
 14. Rewrite only the parts of the note that need correction.
 15. Return strict JSON only.

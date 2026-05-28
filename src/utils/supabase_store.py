@@ -269,3 +269,28 @@ def fetch_topic_resources(topic_id: str) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
+
+
+def fetch_topic_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch the active topic-specific tutor/evidence design from Supabase.
+
+    Patch 040 is deployed before its additive SQL migration. Until the table is
+    present, callers fall back to bundled designs and the learning flow remains usable.
+    """
+    client = get_supabase_client()
+    if client is None or not str(topic_id or "").strip():
+        return None
+    try:
+        result = (
+            client.table("mlos_topic_learning_designs")
+            .select("learning_design")
+            .eq("topic_id", topic_id)
+            .eq("is_active", True)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(result, "data", None) or []
+        payload = rows[0].get("learning_design") if rows else None
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None

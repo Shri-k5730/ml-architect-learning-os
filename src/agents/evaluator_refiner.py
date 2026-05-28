@@ -16,6 +16,8 @@ from src.schemas import (
 )
 from src.utils.validator import ValidationError, build_dataclass
 from src.blueprints.advanced_ml import blueprint_context
+from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
+from src.utils.supabase_store import fetch_topic_learning_design
 from src.agents.writing_assist import analyze_answer_text
 
 
@@ -63,15 +65,35 @@ def build_evaluator_refiner_payload(
         "learning_goal": learner_profile.get("learning_goal", ""),
         "priority_contexts": learner_profile.get("priority_contexts", []),
     }
-    blueprint = blueprint_context(concept_note.topic_id)
-    if blueprint:
-        payload["expert_tutor_blueprint"] = blueprint
+    learning_design = fetch_topic_learning_design(concept_note.topic_id) or get_bundled_learning_design(concept_note.topic_id)
+    if learning_design:
+        runtime_design = dict(learning_design)
+        runtime_design["evidence_tasks"] = [
+            runtime_task_for_question(learning_design, question.question_id, question.question) or {
+                "question_id": question.question_id, "type": question.type, "question": question.question,
+                "purpose": "Demonstrate reasoning for the published task.", "response_shape": "Answer the exact question directly.",
+                "expected_focus": question.expected_focus,
+            }
+            for question in assessment.questions
+        ]
+        payload["topic_learning_design"] = runtime_design
         payload["evaluation_instruction"] = (
-            "Evaluate against expert_tutor_blueprint and its visible teaching_contract. Penalize technically unsafe claims even when phrased confidently. "
-            "Do not penalize a learner for controls, calculations, metrics, or workflow detail that the teaching_contract and mission did not require. "
-            "For scenario-only tiny_hands_on questions with no numeric inputs, judge valid conclusion, invalid conclusion, evidence check, and safe action; do not invent a numeric-comparison requirement. "
-            "For architect_decision questions, require trigger/evidence/owner/approval/action/monitoring only when that chain is shown in the teaching_contract before submission."
+            "Evaluate each response against the corresponding published evidence task in topic_learning_design. "
+            "Score demonstrated reasoning and technically valid conclusions, not preferred terms, keyword presence, or essay length. "
+            "Do not demand a generic production-risk/control structure when the task asks for calculation, comparison, diagnosis, or plain-language explanation. "
+            "Do not introduce any criterion absent from the lesson or task. Penalize genuinely false or unsafe technical claims. "
+            "Normal lessons intentionally use focused evidence tasks; checkpoints and capstone are deeper gates."
         )
+    else:
+        blueprint = blueprint_context(concept_note.topic_id)
+        if blueprint:
+            payload["expert_tutor_blueprint"] = blueprint
+            payload["evaluation_instruction"] = (
+                "Evaluate against expert_tutor_blueprint and its visible teaching_contract. Penalize technically unsafe claims even when phrased confidently. "
+                "Do not penalize a learner for controls, calculations, metrics, or workflow detail that the teaching_contract and mission did not require. "
+                "For scenario-only tiny_hands_on questions with no numeric inputs, judge valid conclusion, invalid conclusion, evidence check, and safe action; do not invent a numeric-comparison requirement. "
+                "For architect_decision questions, require trigger/evidence/owner/approval/action/monitoring only when that chain is shown in the teaching_contract before submission."
+            )
     if practice_exercise is not None:
         payload["practice_exercise"] = practice_exercise
     if practice_submission is not None:

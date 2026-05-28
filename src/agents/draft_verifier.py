@@ -6,6 +6,8 @@ from typing import Any, Dict, List
 from src.agents.topic_coaching_profiles import get_topic_coaching_profile
 from src.agents.writing_assist import analyze_answer_text
 from src.schemas import ArchitectNote, Assessment, ConceptNote
+from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
+from src.utils.supabase_store import fetch_topic_learning_design
 
 
 def _normalize(text: str) -> str:
@@ -293,13 +295,21 @@ def verify_draft_answers(
     by_question = {item.get("question_id"): item for item in answers_doc.get("answers", [])}
     items: List[Dict[str, Any]] = []
     profile = get_topic_coaching_profile(concept_note.topic_id)
+    learning_design = fetch_topic_learning_design(concept_note.topic_id) or get_bundled_learning_design(concept_note.topic_id)
 
     for question in assessment.questions:
         answer = str(by_question.get(question.question_id, {}).get("answer", "")).strip()
-        expected_gaps = _coverage_gap(question.expected_focus, answer)
+        task_meta = runtime_task_for_question(learning_design, question.question_id, question.question) if learning_design else None
+        if learning_design:
+            # Patch 040: draft checking is a technical guardrail, not a keyword/star predictor.
+            expected_gaps = ["Provide a response for this evidence task."] if not answer else []
+            type_gaps = []
+            contract_gaps = []
+        else:
+            expected_gaps = _coverage_gap(question.expected_focus, answer)
+            type_gaps = _type_gap(question.type, answer, question.question)
+            contract_gaps = _contract_requirement_gaps(concept_note.topic_id, question.question_id, answer)
         concept_findings = [*_profile_gap(concept_note.topic_id, answer), *_contract_findings(concept_note.topic_id, question.question_id, answer)]
-        type_gaps = _type_gap(question.type, answer, question.question)
-        contract_gaps = _contract_requirement_gaps(concept_note.topic_id, question.question_id, answer)
         writing_assist = analyze_answer_text(answer, question.type)
         serious_hints = _serious_technical_hints(writing_assist)
 
@@ -329,6 +339,7 @@ def verify_draft_answers(
                 ),
                 "next_improvement": _next_action(question.type, all_gaps, concept_findings, serious_hints),
                 "copy_safe": True,
+                "evidence_task": task_meta or {},
             }
         )
 
@@ -339,9 +350,11 @@ def verify_draft_answers(
     four_star_ready = (not weak_items and len(submit_ready_items) >= max(3, len(items) - 1) and readiness_avg >= 3.6)
 
     if weak_items:
-        recommendation = "Do not submit yet. Fix the weak draft or technical precision issue first."
+        recommendation = "Do not submit yet. Fix empty responses or flagged technical/unsafe claims first."
+    elif learning_design:
+        recommendation = "No blocking technical issue detected by the draft guardrail. Final evaluation will judge whether your reasoning demonstrates each evidence task."
     elif four_star_ready:
-        recommendation = "Submit-ready for a 4-star attempt. To chase 5, add sharper owner/trigger/action details where relevant."
+        recommendation = "Submit-ready for a strong attempt. Final evaluation may still be stricter."
     elif partial_items:
         recommendation = "Borderline submit-ready. Improve the partial drafts if you want a stronger score."
     else:
@@ -350,7 +363,7 @@ def verify_draft_answers(
     return {
         "topic_id": concept_note.topic_id,
         "topic_title": concept_note.title,
-        "mode": "draft_verification_semantic_calibrated_v2",
+        "mode": "evidence_guardrail_no_keyword_scoring_v3" if learning_design else "draft_verification_semantic_calibrated_v2",
         "summary": {
             "readiness_average": readiness_avg,
             "likely_average": readiness_avg,
@@ -362,5 +375,5 @@ def verify_draft_answers(
         },
         "core_concepts_to_check": profile.get("core_concepts", [])[:5],
         "items": items,
-        "note": "Verification uses semantic coverage. It gives hints only. Spelling is language noise; technical misuse is content feedback. Better answers remain hidden until final evaluation.",
+        "note": "For upgraded topic designs, Verify Draft is a technical guardrail only: it catches empty or unsafe/incorrect claims and does not predict stars from keyword presence. Final evaluation judges reasoning against the published evidence task.",
     }

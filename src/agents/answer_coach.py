@@ -8,6 +8,8 @@ from src.agents.topic_coaching_profiles import (
     profile_golden_answer,
 )
 from src.blueprints.advanced_ml import get_blueprint
+from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
+from src.utils.supabase_store import fetch_topic_learning_design
 from src.schemas import (
     ArchitectNote,
     Assessment,
@@ -324,13 +326,17 @@ def _missing_points(
     question: str = "",
 ) -> tuple[List[str], List[Dict[str, str]]]:
     missing: List[str] = []
+    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
 
-    for gap in _expected_focus_gaps(expected_focus, answer):
-        if gap not in missing:
-            missing.append(gap)
-    for gap in _type_specific_gaps(question_type, answer, question, topic_id):
-        if gap not in missing:
-            missing.append(gap)
+    if not learning_design:
+        for gap in _expected_focus_gaps(expected_focus, answer):
+            if gap not in missing:
+                missing.append(gap)
+        for gap in _type_specific_gaps(question_type, answer, question, topic_id):
+            if gap not in missing:
+                missing.append(gap)
+    elif not (answer or "").strip():
+        missing.append("No response was provided for this evidence task.")
 
     misconceptions = _topic_misconceptions(topic_id, answer)
     for item in misconceptions:
@@ -517,7 +523,11 @@ def _why_better(question_type: str) -> str:
     return "It defines the concept precisely and connects it to model behavior rather than vague system language."
 
 
-def _five_star_upgrade(question_type: str, topic_id: str) -> str:
+def _five_star_upgrade(question_type: str, topic_id: str, question_id: str = "", question: str = "") -> str:
+    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    evidence_task = runtime_task_for_question(learning_design, question_id, question) if learning_design else None
+    if evidence_task:
+        return "To strengthen this response, demonstrate the task evidence precisely: " + str(evidence_task.get("response_shape", "answer the question directly."))
     if topic_id == "mlf_019" and question_type == "tiny_hands_on":
         return "To move from 4 to 5, state the valid conclusion, reject the causal/feature-retention leap, and name reliability, leakage/proxy-risk and domain-validation checks."
     if topic_id == "mlf_019" and question_type == "architect_decision":
@@ -527,10 +537,10 @@ def _five_star_upgrade(question_type: str, topic_id: str) -> str:
     if question_type == "failure_diagnosis":
         return "To move from 4 to 5, add the exact evidence you would inspect and how each evidence path changes the fix."
     if question_type == "tiny_hands_on":
-        return "To move from 4 to 5, connect the number or segment comparison to a concrete decision trigger."
+        return "To move from 4 to 5, connect the scenario evidence to a justified decision."
     if question_type == "teachback":
-        return "To move from 4 to 5, make the analogy simpler and close with the business efficiency or risk consequence."
-    return "To move from 4 to 5, add one precise mechanism, one concrete example, and one operational control."
+        return "To move from 4 to 5, make the analogy simpler and close with the business consequence."
+    return "To move from 4 to 5, state the mechanism precisely and demonstrate the requested evidence."
 
 
 def _architect_upgrade(question_type: str, architect_note: ArchitectNote) -> str:
@@ -578,7 +588,7 @@ def generate_answer_coaching(
         quality = _question_quality(question.question_id, answer, missing, misconception_hits, evaluation)
         display_missing = missing
         if _score_floor(evaluation) >= 4 and quality == "strong":
-            display_missing = [_five_star_upgrade(question.type, concept_note.topic_id)]
+            display_missing = [_five_star_upgrade(question.type, concept_note.topic_id, question.question_id, question.question)]
 
         coaching.append(
             {
@@ -587,7 +597,7 @@ def generate_answer_coaching(
                 "your_answer": answer,
                 "answer_quality": quality,
                 "what_was_missing": display_missing,
-                "what_kept_from_5": _five_star_upgrade(question.type, concept_note.topic_id),
+                "what_kept_from_5": _five_star_upgrade(question.type, concept_note.topic_id, question.question_id, question.question),
                 "evidence_bound_findings": misconception_hits,
                 "better_answer": _better_answer(
                     topic_id=concept_note.topic_id,
@@ -604,6 +614,6 @@ def generate_answer_coaching(
 
     return {
         "topic_id": concept_note.topic_id,
-        "mode": "contract_aligned_semantic_coaching_v3",
+        "mode": "topic_specific_evidence_coaching_v4" if (fetch_topic_learning_design(concept_note.topic_id) or get_bundled_learning_design(concept_note.topic_id)) else "contract_aligned_semantic_coaching_v3",
         "coaching": coaching,
     }
