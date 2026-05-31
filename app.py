@@ -285,9 +285,89 @@ def inject_theme() -> None:
         div[data-testid="stMetric"] { background:var(--panel); border:1px solid var(--line); padding:1rem; border-radius:18px; box-shadow:0 8px 24px rgba(21, 42, 73, .06); }
         div[data-testid="stMetric"] label { color:var(--muted) !important; }
         div[data-testid="stMetricValue"] { color:var(--text) !important; font-weight:800; }
-        .stButton > button { border-radius:13px; border:1px solid #204e80; background:#245a92; color:#fff; font-weight:750; padding:.68rem 1rem; box-shadow:0 6px 14px rgba(36,90,146,.18); transition:all .16s ease; }
-        .stButton > button:hover { transform:translateY(-1px); background:#1c486f; border-color:#1c486f; box-shadow:0 10px 18px rgba(36,90,146,.22); }
-        .stButton > button:disabled { background:#dde5ee; border-color:#c9d4e2; color:#768599; box-shadow:none; transform:none; }
+        /* Action buttons: Review, Redo, Save Answers, Verify Draft, Run Code, Submit */
+        .stButton > button,
+        div[data-testid="stButton"] > button,
+        div[data-testid="stButton"] button,
+        div[data-testid="stFormSubmitButton"] > button,
+        div[data-testid="stFormSubmitButton"] button {
+            border-radius: 13px !important;
+            border: 1px solid #204e80 !important;
+            background: #245a92 !important;
+            color: #ffffff !important;
+            font-weight: 800 !important;
+            padding: .68rem 1rem !important;
+            box-shadow: 0 6px 14px rgba(36,90,146,.18) !important;
+            transition: all .16s ease !important;
+        }
+
+        /* Button hover */
+        .stButton > button:hover,
+        div[data-testid="stButton"] > button:hover,
+        div[data-testid="stButton"] button:hover,
+        div[data-testid="stFormSubmitButton"] > button:hover,
+        div[data-testid="stFormSubmitButton"] button:hover {
+            transform: translateY(-1px);
+            background: #1c486f !important;
+            border-color: #1c486f !important;
+            color: #ffffff !important;
+            box-shadow: 0 10px 18px rgba(36,90,146,.22) !important;
+        }
+
+        /* Button active/clicked */
+        .stButton > button:active,
+        div[data-testid="stButton"] > button:active,
+        div[data-testid="stButton"] button:active,
+        div[data-testid="stFormSubmitButton"] > button:active,
+        div[data-testid="stFormSubmitButton"] button:active {
+            background: #173b64 !important;
+            border-color: #173b64 !important;
+            color: #ffffff !important;
+        }
+
+        /* Button focus */
+        .stButton > button:focus,
+        div[data-testid="stButton"] > button:focus,
+        div[data-testid="stFormSubmitButton"] > button:focus {
+            color: #ffffff !important;
+            box-shadow: 0 0 0 3px rgba(36,90,146,.22) !important;
+        }
+
+        /* This is the important part. Streamlit often puts text inside p/span. */
+        .stButton > button p,
+        .stButton > button span,
+        div[data-testid="stButton"] button p,
+        div[data-testid="stButton"] button span,
+        div[data-testid="stFormSubmitButton"] button p,
+        div[data-testid="stFormSubmitButton"] button span {
+            color: #ffffff !important;
+            font-weight: 800 !important;
+        }
+
+        /* Disabled buttons */
+        .stButton > button:disabled,
+        div[data-testid="stButton"] > button:disabled,
+        div[data-testid="stButton"] button:disabled,
+        div[data-testid="stFormSubmitButton"] > button:disabled,
+        div[data-testid="stFormSubmitButton"] button:disabled {
+            background: #dde5ee !important;
+            border-color: #c9d4e2 !important;
+            color: #66768a !important;
+            box-shadow: none !important;
+            transform: none !important;
+            opacity: 1 !important;
+        }
+
+        /* Disabled nested text */
+        .stButton > button:disabled p,
+        .stButton > button:disabled span,
+        div[data-testid="stButton"] button:disabled p,
+        div[data-testid="stButton"] button:disabled span,
+        div[data-testid="stFormSubmitButton"] button:disabled p,
+        div[data-testid="stFormSubmitButton"] button:disabled span {
+            color: #66768a !important;
+            font-weight: 750 !important;
+        }
         div[data-testid="stTabs"] button { border-radius:999px; color:#4f6075; padding:.62rem 1rem; font-weight:700; }
         div[data-testid="stTabs"] button[aria-selected="true"] { background:var(--primary-soft); color:#1d4c7d; border:1px solid #b8cade; }
         div[data-testid="stTextArea"] textarea, div[data-baseweb="select"] > div, .stTextInput input { background:#f7f9fc; border:1px solid #bfccdc; color:var(--text); border-radius:14px; }
