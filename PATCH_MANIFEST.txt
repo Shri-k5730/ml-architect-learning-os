@@ -1,16 +1,14 @@
-Patch 039 . Tutor Experience and Curated Resource Shelf
-Baseline: deployed Patch 038 state, confirmed by 28-topic curriculum and mlf_022 active screen.
+Patch 042 . Mastery Repair Tutor Depth
 
-Replace/add in GitHub repository root:
-- app.py                                    [replace]
-- src/agents/lesson_booster.py              [replace]
-- src/practice/v2_exercise_bank.py          [replace]
-- src/utils/supabase_store.py               [replace]
-- src/blueprints/tutor_experience.py        [add]
-- docs/PATCH_039_TUTOR_EXPERIENCE_AND_RESOURCE_SHELF.md [add]
-- supabase/sql/039_tutor_experience_curated_resource_shelf.sql [add]
+Files included:
+- app.py
+- .streamlit/config.toml
+- src/blueprints/learning_design.py
+- src/agents/draft_verifier.py
+- src/prompts.py
+- src/practice/v2_exercise_bank.py
+- supabase/sql/042_mastery_repair_tutor_depth.sql
+- docs/PATCH_042_MASTERY_REPAIR_TUTOR_DEPTH.md
 
-Run after successful Streamlit Cloud deployment:
-- supabase/sql/039_tutor_experience_curated_resource_shelf.sql
-
-Do not re-run Patch 038 SQL as part of this patch. Patch 039 does not modify curriculum or progress.
+Supabase action:
+Run only supabase/sql/042_mastery_repair_tutor_depth.sql after GitHub deployment succeeds.

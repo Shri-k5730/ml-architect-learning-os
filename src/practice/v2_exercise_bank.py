@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from src.blueprints.tutor_experience import get_code_lab_guidance
-
 
 def _groups(*items: tuple[str, list[str]]) -> list[dict[str, Any]]:
     return [{"label": label, "keywords": keywords} for label, keywords in items]
@@ -16,6 +14,8 @@ V2_PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
         "title": "Flag a monitored feature mean shift",
         "skill_focus": ["drift signal", "threshold rule", "monitoring response"],
         "prompt": "Implement mean_shift_alert(reference_values, current_values, tolerance). Return True when the absolute difference between the two means is greater than tolerance; otherwise return False. Return False for empty inputs.",
+        "concept_bridge": "This code represents an input-drift alert, not a model-performance verdict. It compares a reference feature window with a current feature window and raises an investigation signal when the mean shift is larger than tolerance.",
+        "worked_code_example": "reference=[10,10,10], current=[12,12,12], tolerance=1.0 -> reference mean=10, current mean=12, difference=2. Since 2 > 1, return True.",
         "function_name": "mean_shift_alert",
         "starter_code": """def mean_shift_alert(reference_values, current_values, tolerance):
     # Compare the mean of the reference and current windows.
@@ -46,6 +46,8 @@ V2_PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
         "title": "Build a group holdout split",
         "skill_focus": ["group split", "entity leakage prevention", "validation evidence"],
         "prompt": "Implement group_holdout_indices(groups, holdout_group). Return {'train': [...], 'validation': [...]} containing row indices. Every row belonging to holdout_group must be in validation and no other row may be in validation.",
+        "concept_bridge": "This code represents group leakage prevention. If a production line is held out, every row from that line must stay out of training so validation tests an unseen group.",
+        "worked_code_example": "groups=['Line_A','Line_B','Line_A','Line_B'], holdout='Line_B' -> train=[0,2], validation=[1,3].",
         "function_name": "group_holdout_indices",
         "starter_code": """def group_holdout_indices(groups, holdout_group):
     # Example groups = ['Line_A', 'Line_B', 'Line_A']
@@ -76,6 +78,8 @@ V2_PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
         "title": "Select a candidate under a latency constraint",
         "skill_focus": ["tuning decision", "operational constraint", "search evidence"],
         "prompt": "Implement select_candidate(trials, max_latency_ms). Each trial is a dictionary with 'id', 'validation_score', and 'latency_ms'. Return the id of the highest validation_score trial whose latency_ms is at most max_latency_ms. Return None if no trial qualifies.",
+        "concept_bridge": "This code represents constraint-aware tuning. A candidate with the best validation score is not usable if it violates latency or workload constraints.",
+        "worked_code_example": "A score=0.91 latency=55 and B score=0.88 latency=30 with max_latency=40 -> A fails the latency gate, so select B.",
         "function_name": "select_candidate",
         "starter_code": """def select_candidate(trials, max_latency_ms):
     # Apply the latency gate first, then choose the highest validation_score.
@@ -105,6 +109,8 @@ V2_PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
         "title": "Calculate an operating point",
         "skill_focus": ["thresholding", "precision recall", "alert count"],
         "prompt": "Implement metrics_at_threshold(y_true, scores, threshold). Predict positive when score >= threshold. Return {'precision': value, 'recall': value, 'alerts': count}. Use 0.0 when a denominator is zero.",
+        "concept_bridge": "This code represents an operating point. First convert each score into a 0/1 prediction using the threshold; only then count TP, FP, FN and alerts.",
+        "worked_code_example": "y_true=[1,1,0,0], scores=[0.9,0.6,0.7,0.2], threshold=0.5 -> predictions=[1,1,1,0], TP=2, FP=1, FN=0, alerts=3, precision=2/3, recall=1.0.",
         "function_name": "metrics_at_threshold",
         "starter_code": """def metrics_at_threshold(y_true, scores, threshold):
     # Convert scores to positive/negative decisions, then compute metrics.
@@ -134,6 +140,8 @@ V2_PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
         "title": "Measure probability accuracy with Brier score",
         "skill_focus": ["calibration", "probability error", "risk communication"],
         "prompt": "Implement brier_score(y_true, probabilities). Return the mean squared difference between each probability and binary outcome. Return 0.0 for empty inputs.",
+        "concept_bridge": "This code represents probability honesty. A Brier score penalizes predicted probabilities that do not match observed binary outcomes.",
+        "worked_code_example": "y_true=[1,0], probabilities=[0.8,0.4] -> errors are (0.8-1)^2=0.04 and (0.4-0)^2=0.16, average=0.10.",
         "function_name": "brier_score",
         "starter_code": """def brier_score(y_true, probabilities):
     # Mean of (probability - outcome) ** 2.
@@ -163,6 +171,8 @@ V2_PRACTICE_EXERCISES: Dict[str, Dict[str, Any]] = {
         "title": "Measure label disagreement",
         "skill_focus": ["label audit", "annotation agreement", "release gate"],
         "prompt": "Implement disagreement_rate(labels_a, labels_b). Return the fraction of positions where the two label lists differ. Return 0.0 for empty inputs.",
+        "concept_bridge": "This code represents a label-quality audit. It measures how often two label sources disagree before those labels are trusted for model training.",
+        "worked_code_example": "labels_a=['defect','ok','defect'], labels_b=['defect','defect','ok'] -> 2 disagreements out of 3, rate=0.6667.",
         "function_name": "disagreement_rate",
         "starter_code": """def disagreement_rate(labels_a, labels_b):
     # Fraction of labels where annotator A and B disagree.
@@ -258,8 +268,3 @@ def choose_threshold(scores, y_true, min_recall=0.80):
         "timeout_seconds": 2,
     },
 }
-
-# Learners see the meaning of each function before they are asked to code or interpret it.
-for _topic_id, _exercise in V2_PRACTICE_EXERCISES.items():
-    _exercise.update(get_code_lab_guidance(_topic_id))
-

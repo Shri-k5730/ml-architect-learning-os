@@ -233,7 +233,10 @@ Evaluation rules:
 17. If a learner has the correct mechanism but messy grammar, keep the content score intact and mention language only as a communication note.
 18. When the payload includes topic_learning_design, treat its learning objective and evidence_tasks as the assessment contract. Do not score by keyword matching, repeated control vocabulary, or response length. A concise answer that demonstrates the required reasoning can score strongly.
 19. For topic_learning_design normal lessons, do not expect every response to contain definition, production risk and control; follow that task's response_shape. Checkpoints and capstone can demand integrated architecture reasoning.
-20. Decide one action only: pass, borderline, revise, or fail_prereq.
+20. A topic-specific answer can be concise, but it must not contain a core conceptual falsehood. Penalize conceptual mistakes such as: calibration as confidence instead of observed-frequency honesty; ranking as iteration performance; AUC as deployment threshold; scores compared directly to 0/1 instead of thresholded predictions; random CV treated as valid for unseen-line rollout; or input features called hyperparameters.
+21. For score/probability/threshold topics, separate ranking, probability calibration, threshold decision, precision/recall, and operational capacity. Do not merge them into generic 'model confidence'.
+22. If the learner's recent pattern indicates many borderline passes, prefer reinforce_and_continue over next_topic unless the response shows clear mastery.
+23. Decide one action only: pass, borderline, revise, or fail_prereq.
 13. Borderline means the learner can progress but should improve the topic later.
 14. Rewrite only the parts of the note that need correction.
 15. Return strict JSON only.

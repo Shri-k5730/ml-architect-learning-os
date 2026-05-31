@@ -1548,6 +1548,12 @@ def render_learning_design_panel(topic_id: str) -> bool:
     for idx, step in enumerate(design.get("concept_steps", []) or [], start=1):
         render_static_card(f"{idx}. {step.get('heading', 'Step')}", step.get("body", ""))
 
+    concept_map = design.get("concept_map", []) or []
+    if concept_map:
+        st.markdown("#### Concept map")
+        st.caption("Use this to separate terms that are easy to confuse.")
+        st.dataframe(concept_map, use_container_width=True, hide_index=True)
+
     example = design.get("worked_example", {}) or {}
     if example:
         st.markdown("#### Worked example")
@@ -1557,6 +1563,37 @@ def render_learning_design_panel(topic_id: str) -> bool:
             st.dataframe(rows, use_container_width=True, hide_index=True)
         if example.get("takeaway"):
             st.info(str(example.get("takeaway")))
+
+    more_examples = design.get("worked_examples", []) or []
+    if more_examples:
+        st.markdown("#### Work through it")
+        for example_idx, extra in enumerate(more_examples, start=1):
+            with st.expander(f"Worked path {example_idx}: {extra.get('title', 'Reasoning steps')}", expanded=example_idx == 1):
+                steps = extra.get("steps", []) or []
+                if steps:
+                    for step_idx, step in enumerate(steps, start=1):
+                        st.markdown(f"**{step_idx}.** {step}")
+                elif extra.get("body"):
+                    st.write(extra.get("body"))
+
+    code_bridge = design.get("code_bridge", {}) or {}
+    if code_bridge:
+        with st.expander("Code Lab bridge . read before coding", expanded=True):
+            if code_bridge.get("idea"):
+                render_static_card("What the code represents", code_bridge.get("idea"), "callout-good")
+            algorithm = code_bridge.get("algorithm", []) or []
+            if algorithm:
+                st.markdown("**Algorithm in plain English**")
+                for idx, item in enumerate(algorithm, start=1):
+                    st.markdown(f"{idx}. {item}")
+            if code_bridge.get("common_bug"):
+                render_static_card("Common implementation bug", code_bridge.get("common_bug"), "callout-risk")
+
+    repair_prompts = design.get("mastery_repair_prompts", []) or []
+    if repair_prompts:
+        with st.expander("If this still feels weak . repair prompts", expanded=False):
+            for prompt in repair_prompts:
+                st.markdown(f"- {prompt}")
 
     with st.expander("Common trap and architect extension", expanded=False):
         if design.get("misconception"):

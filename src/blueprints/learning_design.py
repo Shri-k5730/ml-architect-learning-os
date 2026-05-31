@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from src.schemas import ArchitectNote, Assessment, AssessmentQuestion, ConceptNote, UseCaseMapping
 
-VERSION = "topic_specific_evidence_v1"
+VERSION = "mastery_repair_tutor_depth_v2"
 
 
 def task(question_id: str, qtype: str, label: str, question: str, purpose: str, shape: str, minimum: int, maximum: int, focus: List[str]) -> Dict[str, Any]:
@@ -33,7 +33,7 @@ def mcq(question: str, options: List[str], answer_index: int, explanation: str) 
     return {"question": question, "options": options, "answer_index": answer_index, "explanation": explanation}
 
 
-def design(topic_id: str, title: str, objective: str, prerequisite: str, steps: List[Dict[str, str]], example: Dict[str, Any], misconception: str, architect_extension: str, drill: Dict[str, str], checks: List[Dict[str, Any]], tasks: List[Dict[str, Any]], gate: bool = False) -> Dict[str, Any]:
+def design(topic_id: str, title: str, objective: str, prerequisite: str, steps: List[Dict[str, str]], example: Dict[str, Any], misconception: str, architect_extension: str, drill: Dict[str, str], checks: List[Dict[str, Any]], tasks: List[Dict[str, Any]], gate: bool = False, concept_map: Optional[List[Dict[str, str]]] = None, worked_examples: Optional[List[Dict[str, Any]]] = None, code_bridge: Optional[Dict[str, Any]] = None, mastery_repair: Optional[List[str]] = None) -> Dict[str, Any]:
     return {
         "design_version": VERSION,
         "topic_id": topic_id,
@@ -41,14 +41,18 @@ def design(topic_id: str, title: str, objective: str, prerequisite: str, steps: 
         "learning_objective": objective,
         "prerequisite_bridge": prerequisite,
         "concept_steps": steps,
+        "concept_map": concept_map or [],
         "worked_example": example,
+        "worked_examples": worked_examples or [],
+        "code_bridge": code_bridge or {},
         "misconception": misconception,
         "architect_extension": architect_extension,
         "diagnostic_drill": drill,
         "knowledge_checks": checks,
         "evidence_tasks": tasks,
+        "mastery_repair_prompts": mastery_repair or [],
         "is_gate": gate,
-        "assessment_principle": "Score the reasoning demonstrated in the response, not the presence of preferred vocabulary. Do not demand evidence that was not taught or requested.",
+        "assessment_principle": "Score demonstrated reasoning against the visible task contract. Penalize technical falsehoods. Do not reward keyword stuffing, essay length, or repeated control vocabulary.",
     }
 
 
@@ -283,7 +287,7 @@ TOPIC_LEARNING_DESIGNS["mlf_018"] = design(
     [{"heading": "Headline versus pattern", "body": "An overall score says how much error exists; error analysis locates failure pockets and possible mechanisms."}, {"heading": "Evidence", "body": "Slice false positives and false negatives by meaningful segments, time, features and data quality."}],
     {"scenario": "Overall recall is 80%, but night-shift recall is 35%.", "takeaway": "The model has a critical segment failure that must be investigated before broad trust."},
     "Retraining or changing algorithms before locating the error mechanism.",
-    "Store prediction context, slice metrics, assign investigation owners and convert confirmed findings into fixes.",
+    "Store prediction context, slice metrics, assign investigation owners and convert confirmed findings into corrective actions.",
     {"question": "Does overall recall of 80% clear the night-shift failure?", "reveal": "No. The 35% segment recall exposes a critical blind spot."},
     [mcq("What is the first value of error analysis?", ["Find failure patterns", "Hide bad slices", "Remove validation", "Guarantee cause"], 0, "It localises errors for diagnosis.")],
     [task("q1", "concept_check", "Purpose", "What is error analysis and why is an overall score insufficient?", "Define pattern investigation.", "Mechanism and example.", 40, 85, ["segments", "overall metric"]), task("q2", "tiny_hands_on", "Investigate", "Overall recall is 80%, night-shift recall is 35%. What would you inspect first?", "Use scenario evidence.", "Failure pocket, checks and action.", 45, 95, ["night shift", "false negatives"]), task("q3", "failure_diagnosis", "Supplier failure", "The model suddenly fails for one supplier only. Structure the diagnosis.", "Separate symptom and cause.", "Hypotheses, evidence, correction.", 50, 105, ["supplier", "evidence"]), task("q4", "architect_decision", "Workflow", "Design a recurring error-analysis workflow for manufacturing AI.", "Operationalise debugging.", "Logging, slices, owner and response.", 65, 125, ["logged predictions", "owner"])]
@@ -317,67 +321,188 @@ TOPIC_LEARNING_DESIGNS["mlf_020"] = design(
 
 TOPIC_LEARNING_DESIGNS["mlf_021"] = design(
     "mlf_021", "Validation under time, group, and leakage constraints",
-    "Choose splits that test the kind of unseen data the model will face: future periods or unseen groups.",
-    "Recall training/test separation and leakage.",
-    [{"heading": "Why random can lie", "body": "Random rows may place familiar assets, suppliers or future-adjacent patterns in both training and validation."}, {"heading": "Match deployment", "body": "Time holdout tests future periods; group holdout tests unseen production lines, suppliers or assets."}],
-    {"scenario": "Hold out every row from Line_B for validation.", "rows": [{"row": 0, "group": "Line_A", "split": "train"}, {"row": 1, "group": "Line_B", "split": "validation"}, {"row": 2, "group": "Line_A", "split": "train"}], "takeaway": "The model is tested on a group it never trained on."},
-    "Calling a random split honest when deployment is on future time or unseen groups.",
-    "Validation strategy is an architecture decision aligned to rollout risk and feature availability.",
-    {"question": "Random rows or hold out all of Line_B for a new-line rollout?", "reveal": "Hold out Line_B, because the deployment question is generalisation to an unseen line."},
-    [mcq("To test a future rollout, prefer...", ["future time holdout", "mix all future rows into train", "training score", "no validation"], 0, "The split should mirror future deployment.")],
-    [task("q1", "concept_check", "Choose split", "When should you use time holdout versus group holdout?", "Match split to deployment.", "Contrast and examples.", 45, 95, ["time", "group"]), task("q2", "tiny_hands_on", "Build indices", "For groups ['Line_A','Line_B','Line_A','Line_C','Line_B'], identify train and validation indices if Line_B is held out.", "Apply group split.", "Indices plus meaning.", 30, 70, ["train [0,2,3]", "validation [1,4]"]), task("q3", "failure_diagnosis", "Leakage", "A random split looks strong but performance collapses on an unseen supplier. What was the evaluation mistake?", "Diagnose mismatch.", "Mechanism and correction.", 45, 95, ["group holdout", "inflated"]), task("q4", "architect_decision", "Strategy", "Define validation strategy for future batches across multiple production lines.", "Design honest evidence.", "Split hierarchy, leakage check and gate.", 60, 120, ["time", "group", "gate"])]
+    "Choose validation splits that match the deployment boundary: future time, unseen groups, or both, and explain what each split can and cannot prove.",
+    "Recall: train/test separation only becomes honest when the split reflects the way the model will face new data in production.",
+    [
+        {"heading": "1. Start from the deployment question", "body": "Do not begin with 'use cross-validation'. Begin with what the model must generalize to. Future month? New production line? New supplier? New asset? The validation split must simulate that boundary."},
+        {"heading": "2. Random split answers a weaker question", "body": "Random rows test whether the model works on more rows drawn from a familiar mixture. It can leak group identity, near-duplicate behaviour, or future-adjacent patterns into both training and validation."},
+        {"heading": "3. Time and group splits answer harder questions", "body": "A time holdout tests future periods. A group holdout tests unseen entities such as line, supplier, asset, plant, or vehicle family. A combined split may be needed when the rollout includes both future time and unfamiliar groups."},
+        {"heading": "4. Honest scores may be lower", "body": "A lower score from a realistic split is not a failure. It is better evidence. A high random-CV score that cannot survive the deployment boundary is false comfort."},
+    ],
+    {"scenario": "24 months of data from 12 lines. The model will predict next-month defects and may be used on a newly commissioned line.", "rows": [
+        {"validation question": "future on known lines", "split": "train months 1-21, validate months 22-24", "what it proves": "future-time generalisation"},
+        {"validation question": "new line", "split": "hold out one or more full lines", "what it proves": "unseen-line generalisation"},
+        {"validation question": "future new line", "split": "hold out later period for held-out line", "what it proves": "hardest rollout boundary"},
+    ], "takeaway": "The split is a simulation of deployment. Random CV is not automatically wrong, but it is not enough for future or unseen-group rollout."},
+    "Calling any cross-validation strategy valid without checking whether it matches the deployment boundary.",
+    "Governance should record the deployment boundary, approved split design, leakage checks, release gate, owner, and what lower honest performance means for rollout scope.",
+    {"question": "A random split gives 0.91 F1, but a held-out-line split gives 0.63. Which is more useful for a new-line rollout?", "reveal": "The held-out-line result. It is lower, but it tests the deployment boundary that matters."},
+    [mcq("For a model deployed to a newly commissioned line, which split gives the most relevant evidence?", ["Random row split", "Hold out the new-line group", "Training score only", "Shuffle all months and lines together"], 1, "The group boundary matters for a new-line rollout.")],
+    [
+        task("q1", "concept_check", "Split validity", "Explain why cross-validation is not automatically valid for manufacturing ML.", "Show that validity depends on deployment boundary.", "Deployment question -> split implication -> risk of random CV.", 45, 95, ["deployment boundary", "random split limitation", "honest validation"]),
+        task("q2", "tiny_hands_on", "Design split", "You have 24 months of sensor data from 12 production lines and must predict next-month defects on existing and new lines. Design the validation split you would test first.", "Combine time and group reasoning.", "Primary split, why, and what extra split tests.", 55, 115, ["time holdout", "line/group holdout", "deployment boundary"]),
+        task("q3", "failure_diagnosis", "Random-CV collapse", "A model scored highly in random cross-validation, then failed on a newly commissioned line. What likely went wrong and what evidence would prove it?", "Diagnose leakage or deployment mismatch.", "Symptom -> mechanism -> evidence -> corrected validation.", 55, 115, ["group leakage", "unseen line", "evidence"]),
+        task("q4", "architect_decision", "Validation standard", "Define a validation-governance standard for a predictive-quality platform supporting multiple plants and retraining cycles.", "Translate validation into release governance.", "Boundary, split policy, evidence log, approver, monitoring.", 65, 130, ["split policy", "approval evidence", "owner", "monitoring"]),
+    ],
+    concept_map=[
+        {"concept": "Random split", "means": "rows are mixed randomly", "use when": "future data is same mixture and no group leakage risk", "danger": "inflated score under time/group deployment"},
+        {"concept": "Time holdout", "means": "train earlier, validate later", "use when": "predicting future periods", "danger": "does not prove unseen-group performance"},
+        {"concept": "Group holdout", "means": "entire entity excluded from train", "use when": "new line/supplier/asset rollout", "danger": "may ignore future drift unless combined with time"},
+    ],
+    worked_examples=[
+        {"title": "How to reason from deployment to split", "steps": ["If production is next month on known lines, use a later-period holdout.", "If production includes a new line, hold out full lines.", "If both are true, evaluate a time-based holdout and a group-based holdout before broad rollout."]},
+    ],
+    code_bridge={"idea": "Group holdout code is just routing row indices by group membership.", "algorithm": ["Start with empty train and validation index lists.", "Loop over each row index and group.", "If group equals holdout_group, append index to validation.", "Otherwise append index to train."], "common_bug": "Do not put only the first matching group row into validation. Every row from the held-out group must stay together."},
+    mastery_repair=["Given a deployment statement, name the honest split before naming any metric.", "For every validation score, ask: what future condition or group boundary did this score actually test?"],
 )
 
 TOPIC_LEARNING_DESIGNS["mlf_022"] = design(
     "mlf_022", "Hyperparameter tuning without fooling yourself",
-    "Explain what hyperparameters are, compare candidate configurations fairly, and prevent the search from contaminating final evidence.",
-    "Before tuning, recall: model parameters are learned from training data; validation data helps select design choices; the final test set is independent approval evidence.",
-    [{"heading": "1. What is a hyperparameter?", "body": "A hyperparameter is a setting chosen before or around training that changes how the model learns. A decision tree's max_depth, a forest's n_estimators and a model's regularization strength are hyperparameters. Learned tree splits or coefficients are parameters."}, {"heading": "2. Why tune it?", "body": "Different settings can underfit, generalise well or overfit. Tuning compares a planned set of settings using development validation evidence."}, {"heading": "3. How can tuning fool us?", "body": "When many configurations are tested on the same validation evidence, the winner may partly reflect luck specific to that validation sample. The final test must remain outside the search."}],
-    {"scenario": "Decision tree candidates for a defect model", "rows": [{"max_depth": 2, "train_f1": "0.71", "validation_f1": "0.69", "reading": "likely too simple"}, {"max_depth": 8, "train_f1": "0.90", "validation_f1": "0.84", "reading": "promising candidate"}, {"max_depth": 30, "train_f1": "1.00", "validation_f1": "0.72", "reading": "likely overfit"}], "takeaway": "Depth 8 looks better on development evidence. It is selected for one final locked-test check, not declared deployed from validation alone."},
-    "A hyperparameter is not an input feature such as humidity or temperature, and the best observed validation score is not automatically final proof.",
-    "For production, define the search space and budget before tuning, record every trial, approve a selected candidate only on locked final evidence and include latency/workload constraints where relevant.",
-    {"question": "Candidate B has the best validation F1. Is it already approved for deployment?", "reveal": "No. It is the development winner; approve only after one independent locked-test evaluation and constraint check."},
-    [mcq("Which is a hyperparameter of a decision tree?", ["humidity measurement", "max_depth", "actual defect label", "predicted defect"], 1, "max_depth controls how the tree is allowed to learn."), mcq("Why keep a final test set locked during tuning?", ["To provide independent approval evidence", "To increase trial count", "To remove all validation", "To hide results"], 0, "Repeated selection must not consume final evidence.")],
-    [task("q1", "concept_check", "Core concept", "What is a hyperparameter? Distinguish it from a learned parameter and from an input feature using one model example.", "Prove the concept itself is understood before governance.", "Three-way distinction plus example.", 45, 95, ["hyperparameter", "parameter", "feature"]), task("q2", "tiny_hands_on", "Interpret candidates", "Using the max_depth candidate table in the lesson, which setting would you take forward for final evaluation and why?", "Read tuning evidence rather than repeat controls.", "Candidate choice, train/validation pattern and limitation.", 45, 95, ["depth 8", "overfit", "not final approval"]), task("q3", "failure_diagnosis", "Selection failure", "A team tries 150 settings, reports the best validation F1, then sees performance collapse on a later-period locked test. Diagnose what may have happened and what evidence you would inspect.", "Diagnose validation overuse and possible time shift.", "Symptom, two hypotheses, evidence and prevention.", 60, 120, ["selection overfitting", "time shift", "trial history"]), task("q4", "architect_decision", "Govern tuning", "Define a production tuning approval process for model parameters and thresholds.", "Demand architecture only where architecture belongs.", "Search space/budget, registry, locked evidence, owner and approval rule.", 65, 125, ["budget", "registry", "locked test", "owner"])]
+    "Explain what hyperparameters are, compare candidate configurations fairly, and prevent tuning from contaminating final approval evidence.",
+    "Recall: model parameters are learned from data; hyperparameters are chosen settings that shape how learning happens; validation chooses candidates; final test approves once.",
+    [
+        {"heading": "1. What is a hyperparameter?", "body": "A hyperparameter is a setting chosen before or around training. It changes how the model learns. Examples: tree max_depth, forest n_estimators, regularization strength, learning rate. It is not an input feature like humidity and not a learned coefficient."},
+        {"heading": "2. Why tune it?", "body": "Different settings create different behaviour: too simple may underfit, too flexible may overfit, and a middle setting may generalize better. Tuning compares planned candidates using development validation evidence."},
+        {"heading": "3. Where the trap starts", "body": "If you test many candidates against the same validation set, the winner may partly reflect luck in that validation sample. The validation set has become part of the selection process."},
+        {"heading": "4. The safe path", "body": "Define the search space and budget first, log every trial, select one candidate under constraints, then open locked final evidence once for approval."},
+    ],
+    {"scenario": "Decision tree candidates for a defect model", "rows": [
+        {"candidate": "A", "max_depth": 2, "train_f1": "0.71", "validation_f1": "0.69", "reading": "too simple / underfit"},
+        {"candidate": "B", "max_depth": 8, "train_f1": "0.90", "validation_f1": "0.84", "reading": "best development candidate"},
+        {"candidate": "C", "max_depth": 30, "train_f1": "1.00", "validation_f1": "0.72", "reading": "memorising / overfit"},
+    ], "takeaway": "Candidate B is selected for final locked-test review. It is not automatically approved from validation."},
+    "Thinking the best validation result is final proof, or calling an input feature a hyperparameter.",
+    "Production tuning needs a fixed search budget, experiment registry, candidate constraints such as latency, locked final evidence, and named approval owner.",
+    {"question": "If 150 trials are searched and the winner has validation F1=0.88, is 0.88 final deployment evidence?", "reveal": "No. It is selection evidence; final approval needs untouched evidence after the search is complete."},
+    [mcq("Which item is a hyperparameter?", ["humidity reading", "actual defect label", "tree max_depth", "predicted defect flag"], 2, "max_depth is a chosen setting controlling the model's complexity."), mcq("Why log every tuning trial?", ["To show only the winner", "To expose the search process and selection risk", "To avoid validation", "To create labels"], 1, "The approver needs the full trial history, not just the best result.")],
+    [
+        task("q1", "concept_check", "Three-way distinction", "What is a hyperparameter? Distinguish it from a learned parameter and an input feature using one model example.", "Prove the base concept before governance.", "Hyperparameter vs parameter vs feature with example.", 45, 95, ["hyperparameter", "parameter", "feature"]),
+        task("q2", "tiny_hands_on", "Candidate evidence", "Using the max_depth candidate table in the lesson, which setting would you take forward and why?", "Read train/validation evidence.", "Candidate choice, underfit/overfit reading, and limitation.", 45, 95, ["candidate B", "validation evidence", "not final approval"]),
+        task("q3", "failure_diagnosis", "Search failure", "A team tries 150 settings, reports the best validation F1, then sees performance collapse on a later-period locked test. Diagnose.", "Explain selection overfitting and possible time shift.", "Symptom, mechanism, evidence to inspect, prevention.", 60, 120, ["selection overfitting", "trial log", "time shift"]),
+        task("q4", "architect_decision", "Tuning governance", "Define a production tuning approval process for model settings and thresholds.", "Govern the search, not just the model.", "Search space/budget, registry, constraint gate, locked test, owner.", 65, 125, ["budget", "registry", "constraint", "locked test", "owner"]),
+    ],
+    concept_map=[
+        {"concept": "Input feature", "example": "humidity", "chosen or learned": "measured from data", "role": "model input"},
+        {"concept": "Learned parameter", "example": "coefficient/tree split", "chosen or learned": "learned during training", "role": "internal model fit"},
+        {"concept": "Hyperparameter", "example": "max_depth / learning rate", "chosen or learned": "chosen by search/design", "role": "controls learning behaviour"},
+    ],
+    worked_examples=[
+        {"title": "Selection is not approval", "steps": ["Use validation to compare candidates A/B/C.", "Pick B because it balances train and validation performance.", "Check latency or workload constraints.", "Approve only after one locked final test evaluation."]},
+    ],
+    code_bridge={"idea": "The code exercise selects the best candidate that also meets a production constraint.", "algorithm": ["Filter trials whose latency is within max_latency_ms.", "Among eligible trials, keep the one with highest validation_score.", "Return the candidate id, not the whole dictionary.", "Return None when no trial passes the latency gate."], "common_bug": "Do not choose the highest validation score before applying latency. Production constraints are part of candidate selection."},
+    mastery_repair=["Before answering any tuning question, identify what is being tuned.", "Separate candidate-selection evidence from final-approval evidence every time."],
 )
 
 TOPIC_LEARNING_DESIGNS["mlf_023"] = design(
     "mlf_023", "ROC, PR curves, and operating points",
-    "Read threshold curves and select operating points appropriate for rare-defect risk and workload.",
-    "Recall precision, recall, false positives, false negatives and threshold decisions.",
-    [{"heading": "A curve is many thresholds", "body": "Each threshold creates a different combination of caught positives and false alarms."}, {"heading": "ROC versus PR", "body": "ROC can look optimistic when negatives dominate; PR focuses attention on positive detection quality and is often more informative for rare defects."}],
-    {"scenario": "Rare defects: threshold A recall=0.92 precision=0.18; threshold B recall=0.78 precision=0.55.", "takeaway": "The chosen operating point depends on missed-defect risk and available inspection capacity."},
-    "Treating AUC as the deployment threshold or preferring ROC-AUC without considering imbalance.",
-    "Approve an operating point with metric evidence, workload capacity and escalation rules.",
-    {"question": "When defects are rare, why inspect the PR curve closely?", "reveal": "It exposes the precision/recall quality of positive alerts under imbalance."},
-    [mcq("An operating point is...", ["A chosen threshold and its trade-off", "A training label", "Only an AUC score", "A feature"], 0, "Deployment acts at a threshold." )],
-    [task("q1", "concept_check", "Curves", "Explain why PR curves can be more informative than ROC curves for rare defects.", "Connect imbalance to evaluation.", "Mechanism and use.", 40, 90, ["rare positives", "precision-recall"]), task("q2", "tiny_hands_on", "Select point", "Choose between threshold A and B in the lesson when inspection capacity is constrained but missed defects are high cost.", "Make a qualified decision.", "Trade-off and required extra evidence.", 45, 100, ["capacity", "miss cost"]), task("q3", "failure_diagnosis", "AUC trap", "A model has strong ROC-AUC but floods inspectors with low-quality alerts. What was missed?", "Diagnose metric-to-operation gap.", "Failure and better evidence.", 45, 95, ["precision", "operating point"]), task("q4", "architect_decision", "Threshold approval", "Design an operating-point approval rule.", "Translate curves into policy.", "Metric floor, capacity, owner and monitor.", 60, 120, ["threshold", "capacity", "owner"])]
+    "Convert model scores into threshold decisions, compute the resulting precision/recall/alert volume, and choose an operating point based on rare-defect risk and inspection capacity.",
+    "Recall: precision and recall are calculated after a threshold turns scores into positive or negative predictions.",
+    [
+        {"heading": "1. A score is not yet an action", "body": "A model may output risk scores such as 0.90, 0.60, 0.20. A threshold converts those scores into actions: alert if score >= threshold."},
+        {"heading": "2. A curve is many thresholds", "body": "Each possible threshold creates a different confusion matrix. Lower threshold usually raises recall and alert volume. Higher threshold usually improves precision but can miss positives."},
+        {"heading": "3. ROC versus PR", "body": "ROC curves can look reassuring when negatives dominate. PR curves focus on the quality of positive alerts, which matters more when defects are rare."},
+        {"heading": "4. Operating point", "body": "Deployment does not use an AUC score directly. It uses a chosen threshold plus the precision, recall, alert capacity and cost trade-off at that threshold."},
+    ],
+    {"scenario": "Actual labels [1,1,0,0], scores [0.9,0.6,0.7,0.2], threshold 0.5", "rows": [
+        {"row": 0, "actual": 1, "score": 0.9, "prediction": 1, "result": "TP"},
+        {"row": 1, "actual": 1, "score": 0.6, "prediction": 1, "result": "TP"},
+        {"row": 2, "actual": 0, "score": 0.7, "prediction": 1, "result": "FP"},
+        {"row": 3, "actual": 0, "score": 0.2, "prediction": 0, "result": "TN"},
+    ], "takeaway": "Precision=2/3, recall=2/2, alerts=3. Threshold first, metrics second."},
+    "Treating AUC as a deployment threshold or calculating TP/FP/FN before applying the threshold to scores.",
+    "Approve an operating point with minimum recall, acceptable precision/alert load, named capacity owner, escalation rule and monitoring after deployment.",
+    {"question": "If you raise the threshold, what usually happens to recall?", "reveal": "Recall can fall because fewer cases are flagged positive, so some true defects may be missed."},
+    [mcq("What is an operating point?", ["A selected threshold with its metric/workload trade-off", "Only ROC-AUC", "The training label", "A feature value"], 0, "Operations act on a threshold, not just a curve."), mcq("For rare defects, why inspect PR curves?", ["They focus on positive alert quality", "They ignore precision", "They remove thresholds", "They prove causality"], 0, "Rare positives make precision and recall central.")],
+    [
+        task("q1", "concept_check", "Curve meaning", "Explain why PR curves can be more informative than ROC curves for rare defects.", "Connect imbalance to alert quality.", "Imbalance -> PR focus -> operating decision.", 40, 90, ["rare positives", "precision", "recall"]),
+        task("q2", "tiny_hands_on", "Operating choice", "Choose between threshold A recall=0.92 precision=0.18 and threshold B recall=0.78 precision=0.55 when inspection capacity is constrained but missed defects are high cost.", "Make a qualified operating decision.", "Trade-off, capacity, cost, missing evidence.", 55, 115, ["recall", "precision", "capacity", "cost"]),
+        task("q3", "failure_diagnosis", "AUC trap", "A model has strong ROC-AUC but floods inspectors with low-quality alerts. What was missed?", "Diagnose metric-to-operation gap.", "Failure mechanism and better evidence.", 45, 95, ["operating point", "precision", "alert volume"]),
+        task("q4", "architect_decision", "Approval rule", "Design an operating-point approval rule for rare-defect alerts.", "Translate curves into policy.", "Metric floor, capacity gate, owner, monitoring.", 60, 120, ["threshold", "metric floor", "capacity", "owner"]),
+    ],
+    concept_map=[
+        {"concept": "Threshold", "means": "score >= threshold becomes alert", "business question": "who gets inspected or escalated"},
+        {"concept": "Precision", "means": "TP/(TP+FP)", "business question": "how many alerts waste capacity"},
+        {"concept": "Recall", "means": "TP/(TP+FN)", "business question": "how many real defects are caught"},
+        {"concept": "Alerts", "means": "count of predicted positives", "business question": "can operations handle the workload"},
+    ],
+    worked_examples=[
+        {"title": "Code-lab algorithm", "steps": ["For each score, compute predicted_positive = score >= threshold.", "Use predicted_positive and y_true to count TP, FP and FN.", "Alerts are the number of predicted positives.", "Precision and recall use those counts, with zero-denominator guards."]},
+    ],
+    code_bridge={"idea": "Metrics at a threshold are computed only after scores are converted into decisions.", "algorithm": ["Loop through y_true and scores together.", "Set predicted_positive = score >= threshold.", "Count TP/FP/FN from predicted_positive and actual label.", "Return precision, recall and alert count."], "common_bug": "Do not compare scores to 0 or 1. Scores are continuous risk values; the threshold creates 0/1 decisions."},
+    mastery_repair=["Before computing any metric, write the threshold rule in plain language.", "For every operating point, say both: what it catches and what workload it creates."],
 )
 
 TOPIC_LEARNING_DESIGNS["mlf_024"] = design(
     "mlf_024", "Probability calibration and confidence",
-    "Determine whether predicted probabilities are honest enough for risk-based decisions.",
-    "Recall that ranking cases and estimating reliable probability are different jobs.",
-    [{"heading": "Ranking versus calibration", "body": "A model may rank risky cases correctly while its 0.8 scores do not mean approximately 80% occurrence."}, {"heading": "Decision relevance", "body": "Probabilities drive thresholds, intervention tiers and expected cost calculations only if calibrated."}],
-    {"scenario": "Among 100 cases scored near 0.8, only 35 fail.", "takeaway": "The model is overconfident in that score band, even if its ranking is useful."},
-    "Treating a raw score as a trustworthy probability without calibration evidence.",
-    "Use reliability checks, calibration metrics and policy review before probability-based action tiers.",
-    {"question": "If 0.8-risk cases fail only 35% of the time, what is wrong?", "reveal": "The probability is poorly calibrated or shifted; it is overconfident in that band."},
-    [mcq("Calibration asks whether...", ["Predicted probabilities match observed rates", "All features are causal", "Training is fast", "AUC is zero"], 0, "Calibration concerns probability honesty." )],
-    [task("q1", "concept_check", "Concept", "Explain probability calibration versus ranking performance.", "Separate two kinds of quality.", "Contrast and business relevance.", 40, 90, ["probability", "ranking"]), task("q2", "tiny_hands_on", "Interpret band", "100 cases are scored near 0.8 risk, but only 35 fail. What should you conclude and do next?", "Read calibration evidence.", "Conclusion and validation/action.", 40, 90, ["overconfident", "review"]), task("q3", "failure_diagnosis", "Decision error", "Intervention capacity is exceeded because scores were treated as reliable probabilities. Diagnose.", "Link calibration to operations.", "Mechanism and correction.", 45, 100, ["calibration", "capacity"]), task("q4", "architect_decision", "Risk policy", "Define probability-calibration evidence before risk-tier deployment.", "Govern score-based decisions.", "Evidence, threshold policy and owner.", 60, 120, ["reliability", "owner"])]
+    "Determine whether model scores can be treated as honest probabilities for risk-tier decisions, not just rankings.",
+    "Recall: a model can rank cases well even when its probability numbers are not honest. Ranking asks order. Calibration asks probability truth.",
+    [
+        {"heading": "1. Ranking asks order", "body": "Ranking performance asks whether higher-scored cases tend to be riskier than lower-scored cases. A model can rank well if most failures appear near the top of the list."},
+        {"heading": "2. Calibration asks frequency honesty", "body": "Calibration asks whether a score means what it says. If cases scored near 0.8 fail about 80% of the time, that band is calibrated. If only 35% fail, the model is overconfident in that band."},
+        {"heading": "3. Why business cares", "body": "Risk tiers, intervention budgets and expected-cost decisions depend on probability honesty. If raw scores are overconfident, teams may over-intervene, overload capacity, or price risk incorrectly."},
+        {"heading": "4. How to govern it", "body": "Use reliability tables/curves, Brier score, calibration checks on holdout data, and recalibration policy before using scores as probabilities."},
+    ],
+    {"scenario": "100 cases are scored around 0.8 risk", "rows": [
+        {"score band": "near 0.8", "expected if calibrated": "about 80 failures out of 100", "observed": "35 failures", "reading": "overconfident probability"},
+        {"score band": "near 0.2", "expected if calibrated": "about 20 failures out of 100", "observed": "18 failures", "reading": "reasonably calibrated band"},
+    ], "takeaway": "The 0.8 score may still help ranking, but it is not honest enough to drive an 80%-risk intervention tier."},
+    "Calling a raw model score 'confidence' or treating a high score as a reliable probability without observed-outcome evidence.",
+    "Before risk-tier deployment, require reliability evidence by score band, Brier/calibration metric, recalibration owner, threshold policy and post-release calibration monitoring.",
+    {"question": "A model ranks failures near the top, but 0.8-score cases fail only 35% of the time. Is the model useless?", "reveal": "No. Ranking may still be useful, but the probability is not calibrated enough for probability-based risk decisions."},
+    [mcq("Calibration asks whether...", ["predicted probabilities match observed outcome rates", "higher scores always cause failures", "the model trains faster", "all thresholds are 0.5"], 0, "Calibration is probability honesty against observed outcomes."), mcq("A model can rank well but be poorly calibrated because...", ["order and probability accuracy are different", "ranking requires no labels", "calibration proves causality", "Brier score is accuracy"], 0, "Order quality and probability honesty are different jobs.")],
+    [
+        task("q1", "concept_check", "Two qualities", "Explain probability calibration versus ranking performance.", "Separate order quality from probability honesty.", "Contrast plus business relevance.", 45, 95, ["ranking", "probability honesty", "observed outcomes"]),
+        task("q2", "tiny_hands_on", "Band evidence", "100 cases are scored near 0.8 risk, but only 35 fail. What should you conclude and do next?", "Read calibration evidence.", "Conclusion, not-useless caveat, validation/recalibration action.", 45, 100, ["overconfident", "observed outcomes", "recalibration"]),
+        task("q3", "failure_diagnosis", "Capacity overload", "Intervention capacity is exceeded because scores were treated as reliable probabilities. Diagnose.", "Link calibration error to operational overload.", "Mechanism and correction.", 50, 105, ["raw scores", "capacity", "risk tiers"]),
+        task("q4", "architect_decision", "Risk policy", "Define probability-calibration evidence before risk-tier deployment.", "Govern score-based decisions.", "Reliability evidence, policy, owner, monitoring/recalibration.", 65, 125, ["reliability", "owner", "recalibration", "monitoring"]),
+    ],
+    concept_map=[
+        {"concept": "Ranking", "question answered": "Are higher scores generally riskier?", "example evidence": "failures concentrate in top decile", "business use": "prioritise review queue"},
+        {"concept": "Calibration", "question answered": "Does 0.8 mean about 80% observed failure?", "example evidence": "score-band observed rates", "business use": "risk tiers, cost and budget decisions"},
+        {"concept": "Brier score", "question answered": "How large are probability errors on average?", "example evidence": "mean squared probability error", "business use": "compare probability honesty"},
+    ],
+    worked_examples=[
+        {"title": "How to read a score band", "steps": ["Collect cases with predicted probability near 0.8.", "Count observed failures in that band.", "If 35/100 fail, observed rate is 35%, not 80%.", "Conclusion: overconfident probability; ranking may still be useful but risk tiers need recalibration or different thresholds."]},
+        {"title": "Brier score intuition", "steps": ["For each row, compute (probability - outcome)^2.", "Average those squared errors.", "Lower is better probability honesty. It does not replace ranking metrics or capacity checks."]},
+    ],
+    code_bridge={"idea": "Brier score measures probability error row by row.", "algorithm": ["For each probability/outcome pair, subtract outcome from probability.", "Square the error so over- and under-confidence both count.", "Average squared errors across rows.", "Return 0.0 for empty input to avoid divide-by-zero."], "common_bug": "Do not treat Brier score as accuracy or ranking. It measures probability honesty."},
+    mastery_repair=["Never say calibrated probability means model confidence. Say: predicted probability should match observed frequency.", "For any score band, compare predicted rate against observed rate before using it for risk tiers."],
 )
 
 TOPIC_LEARNING_DESIGNS["mlf_025"] = design(
     "mlf_025", "Data quality, label quality, and sampling bias",
-    "Identify when poor input/target data or unrepresentative sampling invalidates model learning and evaluation.",
-    "Recall that models learn from examples and labels rather than business truth directly.",
-    [{"heading": "Data and labels", "body": "Missing values, inconsistent sensors and ambiguous labels can teach the wrong pattern."}, {"heading": "Sampling", "body": "A model trained only on easy or selected cases may fail on the real operational population."}],
-    {"scenario": "Two inspectors disagree on 30% of defect labels, while the training set excludes hard-to-inspect parts.", "takeaway": "Both target reliability and sample representativeness are compromised."},
-    "Treating more rows as sufficient without checking whether labels and sampling are trustworthy.",
-    "Define label audit, sampling provenance, missing-data checks and approval thresholds before model release.",
-    {"question": "Can a sophisticated model solve inconsistent labels on its own?", "reveal": "No. It may learn disagreement and bias rather than real defect signal."},
-    [mcq("High label disagreement primarily threatens...", ["Target truth used for learning", "CSS styling", "Password length", "Only compute time"], 0, "The model learns from the labels it receives." )],
-    [task("q1", "concept_check", "Concept", "Differentiate input data quality, label quality and sampling bias.", "Separate failure sources.", "Three definitions with examples.", 45, 100, ["input", "label", "sample"]), task("q2", "tiny_hands_on", "Interpret audit", "Two labelers disagree on 30% of defect cases. What should happen before training approval?", "Use quality evidence.", "Conclusion, investigation and gate.", 40, 90, ["label audit", "approval"]), task("q3", "failure_diagnosis", "Biased sample", "A model trained only on escalated warranty cases fails on normal workshop traffic. Diagnose.", "Recognise sampling bias.", "Mechanism and correction.", 45, 100, ["selection bias", "representative"]), task("q4", "architect_decision", "Data gate", "Design minimum data-quality and label-quality release gates.", "Create foundation controls.", "Checks, thresholds and owner.", 60, 120, ["audit", "owner"])]
+    "Identify whether inputs, labels and samples are trustworthy enough for a model to learn and for evaluation to mean anything.",
+    "Recall: models learn from the examples and labels they receive. Bad examples or bad labels produce bad learning, even with a strong algorithm.",
+    [
+        {"heading": "1. Input data quality", "body": "Input quality covers missing values, inconsistent units, broken sensors, duplicates, impossible values and pipeline mismatches."},
+        {"heading": "2. Label quality", "body": "Label quality covers whether the target outcome is reliable: inspector disagreement, delayed labels, proxy labels, inconsistent definitions and ambiguous defect classes."},
+        {"heading": "3. Sampling bias", "body": "Sampling bias means the training or evaluation rows do not represent the real population. A model trained only on escalated cases may fail on normal workshop traffic."},
+        {"heading": "4. Why this comes before modelling", "body": "No algorithm can recover a target that is inconsistently labelled or a population that was never sampled. Data and label gates are release controls, not admin paperwork."},
+    ],
+    {"scenario": "Two inspectors label the same defect cases and disagree on 30%; the training set also excludes hard-to-inspect parts.", "rows": [
+        {"issue": "30% label disagreement", "threat": "target truth is unstable", "gate response": "label audit and protocol repair"},
+        {"issue": "hard cases excluded", "threat": "sample is not representative", "gate response": "coverage review and sample expansion"},
+    ], "takeaway": "More rows do not help if the labels are inconsistent and the sampled population excludes the hardest cases."},
+    "Treating volume as quality. More data with unreliable labels or biased selection can make the model more confidently wrong.",
+    "Release governance should include label audit, inter-annotator agreement, missingness/outlier checks, segment coverage, sampling provenance and accountable data owners.",
+    {"question": "If two inspectors disagree on 30% of labels, should model training proceed unchanged?", "reveal": "No. The label definition or annotation process must be repaired before treating labels as ground truth."},
+    [mcq("Sampling bias means...", ["the sampled rows do not represent the deployment population", "the model has many features", "the labels are always correct", "the score is calibrated"], 0, "The training/evaluation population can be systematically unrepresentative."), mcq("High label disagreement threatens...", ["the target the model learns", "only UI colour", "only model latency", "only file size"], 0, "The model learns from labels, so label reliability is foundational.")],
+    [
+        task("q1", "concept_check", "Three failure sources", "Differentiate input data quality, label quality and sampling bias.", "Separate failure sources clearly.", "Three definitions with one example each.", 55, 115, ["input quality", "label quality", "sampling bias"]),
+        task("q2", "tiny_hands_on", "Label audit", "Two labelers disagree on 30% of defect cases. What should happen before training approval?", "Use label evidence as a gate.", "Conclusion, investigation, approval gate.", 45, 95, ["label disagreement", "audit", "gate"]),
+        task("q3", "failure_diagnosis", "Biased sample", "A model trained only on escalated warranty cases fails on normal workshop traffic. Diagnose.", "Recognise sampling bias.", "Mechanism and correction.", 45, 100, ["selection bias", "representative sample", "coverage"]),
+        task("q4", "architect_decision", "Data gate", "Design minimum data-quality and label-quality release gates.", "Create foundation controls.", "Checks, thresholds, owners and block/release decision.", 65, 125, ["label audit", "coverage", "owner", "release gate"]),
+    ],
+    concept_map=[
+        {"concept": "Input quality", "bad sign": "missing/broken sensors, unit mismatch", "impact": "features mislead model", "control": "profiling and validation checks"},
+        {"concept": "Label quality", "bad sign": "inspectors disagree, proxy labels", "impact": "target is unreliable", "control": "label audit and protocol"},
+        {"concept": "Sampling bias", "bad sign": "only easy or escalated cases", "impact": "model fails on real population", "control": "coverage and provenance review"},
+    ],
+    worked_examples=[
+        {"title": "Release-gate reasoning", "steps": ["If label disagreement is high, pause training approval.", "Inspect disagreement by defect type, inspector, plant and time.", "Repair label protocol and relabel critical samples.", "Only approve modelling when label quality and segment coverage pass agreed thresholds."]},
+    ],
+    code_bridge={"idea": "Disagreement rate is a simple label-quality signal.", "algorithm": ["Compare labels from two annotators position by position.", "Count how many positions differ.", "Divide by total compared labels.", "Return 0.0 for empty input."], "common_bug": "Do not treat agreement as model accuracy. It is a data-quality gate before modelling."},
+    mastery_repair=["Before asking which model to train, ask whether the labels and sample are trustworthy.", "Separate input defects, target defects and population coverage defects in every diagnosis."],
 )
 
 # Gate items retain richer evidence because they exist to integrate topics.

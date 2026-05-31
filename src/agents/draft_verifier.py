@@ -198,6 +198,57 @@ def _contract_requirement_gaps(topic_id: str, question_id: str, answer: str) -> 
     return gaps[:2]
 
 
+def _contains_phrase(answer_l: str, phrases: List[str]) -> bool:
+    return any(phrase in answer_l for phrase in phrases)
+
+def _learning_design_guardrail_findings(topic_id: str, question_id: str, answer: str) -> List[Dict[str, str]]:
+    """Patch 042: catch real conceptual mistakes for topic-specific evidence tasks.
+
+    This is intentionally not a keyword scorer. It flags known unsafe or technically false
+    statements that the learner should repair before final evaluation.
+    """
+    answer_l = _normalize(answer)
+    if not answer_l:
+        return []
+
+    findings: List[Dict[str, str]] = []
+
+    def add(issue: str, correction: str, severity: str = "blocking") -> None:
+        findings.append({"evidence": "topic-specific guardrail", "issue": issue, "correction": correction, "severity": severity})
+
+    if topic_id == "mlf_021":
+        if question_id in {"q1", "q2", "q3"} and _contains_phrase(answer_l, ["random split is enough", "random cross validation is enough", "random cv is enough", "any cross-validation", "automatically valid"]):
+            add("Validation split is being treated as generic rather than deployment-boundary specific.", "State which deployment boundary is being tested: future time, unseen group, or both. Then choose the split that simulates it.")
+        if question_id == "q2" and not any(token in answer_l for token in ["time", "future", "month", "temporal", "line", "group", "holdout"]):
+            add("The validation design does not name either a time boundary or a line/group boundary.", "For the 24-month/12-line scenario, include a later-period split and a held-out-line or grouped split.", "warning")
+
+    if topic_id == "mlf_022":
+        if _contains_phrase(answer_l, ["humidity is a hyperparameter", "temperature is a hyperparameter", "feature is a hyperparameter", "input feature is a hyperparameter"]):
+            add("Input features are being confused with hyperparameters.", "Use this distinction: feature = measured input, parameter = learned internal value, hyperparameter = chosen setting like max_depth or learning_rate.")
+        if question_id in {"q2", "q3", "q4"} and _contains_phrase(answer_l, ["validation score is final", "final approval from validation", "deploy based on validation", "approved because validation"]):
+            add("Validation selection evidence is being treated as final approval evidence.", "Say that validation selects a candidate, but locked final evidence approves it once after tuning.")
+
+    if topic_id == "mlf_023":
+        if _contains_phrase(answer_l, ["auc is the threshold", "auc as threshold", "roc-auc threshold", "auc decides deployment"]):
+            add("AUC is being treated as a deployment threshold.", "AUC summarizes ranking over thresholds; deployment needs a chosen operating point with recall, precision and alert capacity.")
+        if question_id in {"q2", "q4"} and not any(token in answer_l for token in ["capacity", "alert", "workload", "inspection"]):
+            add("Operating-point reasoning is missing workload/capacity.", "Tie the threshold decision to recall, precision, false-negative cost and inspection/alert capacity.", "warning")
+
+    if topic_id == "mlf_024":
+        if question_id == "q1" and _contains_phrase(answer_l, ["ranking performance is how well the model performed in each iteration", "ranking performance is comparing against calibrated probabilities", "ranking performance is calibrated probability"]):
+            add("Ranking performance is incorrectly defined.", "Ranking asks whether higher-scored cases are generally riskier than lower-scored cases. Calibration asks whether predicted probabilities match observed frequencies.")
+        if _contains_phrase(answer_l, ["calibration is confidence", "confidence parameter", "model confidence parameter", "probability calibration is confidence", "confidence in model", "model’s predictions", "model predictions"]):
+            add("Calibration is being confused with confidence.", "Define calibration as predicted probabilities matching observed outcome frequencies, for example 0.8-score cases failing about 80% of the time.")
+        if question_id in {"q2", "q4"} and _contains_phrase(answer_l, ["0.8 means 80% confident", "80% confidence"]):
+            add("The score is being framed as model confidence instead of probability evidence.", "Say the model is assigning about 0.8 predicted risk, then compare that score band to observed outcomes.", "warning")
+
+    if topic_id == "mlf_025":
+        if _contains_phrase(answer_l, ["more data solves", "just add more data", "model will fix labels", "algorithm will fix labels"]):
+            add("Data volume or model complexity is being used to bypass label/sample quality.", "Separate input quality, label reliability and sampling representativeness before approving training.")
+
+    return findings[:3]
+
+
 def _type_gap(question_type: str, answer: str, question: str = "") -> List[str]:
     answer_l = _normalize(answer)
     gaps: List[str] = []
@@ -309,7 +360,11 @@ def verify_draft_answers(
             expected_gaps = _coverage_gap(question.expected_focus, answer)
             type_gaps = _type_gap(question.type, answer, question.question)
             contract_gaps = _contract_requirement_gaps(concept_note.topic_id, question.question_id, answer)
-        concept_findings = [*_profile_gap(concept_note.topic_id, answer), *_contract_findings(concept_note.topic_id, question.question_id, answer)]
+        concept_findings = [
+            *_profile_gap(concept_note.topic_id, answer),
+            *_contract_findings(concept_note.topic_id, question.question_id, answer),
+            *_learning_design_guardrail_findings(concept_note.topic_id, question.question_id, answer),
+        ]
         writing_assist = analyze_answer_text(answer, question.type)
         serious_hints = _serious_technical_hints(writing_assist)
 
@@ -320,7 +375,9 @@ def verify_draft_answers(
 
         # Do not count spelling suggestions as readiness blockers. They are language noise.
         blocking_count = sum(1 for finding in concept_findings if finding.get("severity") == "blocking")
-        score = _readiness_score(answer, len(all_gaps), len(concept_findings), len(serious_hints), blocking_count)
+        conceptual_issue_count = sum(1 for finding in concept_findings if finding.get("severity") != "warning")
+        warning_count = sum(1 for finding in concept_findings if finding.get("severity") == "warning")
+        score = _readiness_score(answer, len(all_gaps) + warning_count, conceptual_issue_count, len(serious_hints), blocking_count)
         items.append(
             {
                 "question_id": question.question_id,
