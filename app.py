@@ -291,82 +291,70 @@ def inject_theme() -> None:
         div[data-testid="stButton"] button,
         div[data-testid="stFormSubmitButton"] > button,
         div[data-testid="stFormSubmitButton"] button {
-            border-radius: 13px !important;
-            border: 1px solid #204e80 !important;
-            background: #245a92 !important;
-            color: #ffffff !important;
-            font-weight: 800 !important;
-            padding: .68rem 1rem !important;
-            box-shadow: 0 6px 14px rgba(36,90,146,.18) !important;
-            transition: all .16s ease !important;
+            border-radius:13px !important;
+            border:1px solid #204e80 !important;
+            background:#245a92 !important;
+            color:#ffffff !important;
+            font-weight:800 !important;
+            padding:.68rem 1rem !important;
+            box-shadow:0 6px 14px rgba(36,90,146,.18) !important;
+            transition:all .16s ease !important;
         }
-
-        /* Button hover */
         .stButton > button:hover,
         div[data-testid="stButton"] > button:hover,
         div[data-testid="stButton"] button:hover,
         div[data-testid="stFormSubmitButton"] > button:hover,
         div[data-testid="stFormSubmitButton"] button:hover {
-            transform: translateY(-1px);
-            background: #1c486f !important;
-            border-color: #1c486f !important;
-            color: #ffffff !important;
-            box-shadow: 0 10px 18px rgba(36,90,146,.22) !important;
+            transform:translateY(-1px);
+            background:#1c486f !important;
+            border-color:#1c486f !important;
+            color:#ffffff !important;
+            box-shadow:0 10px 18px rgba(36,90,146,.22) !important;
         }
-
-        /* Button active/clicked */
         .stButton > button:active,
         div[data-testid="stButton"] > button:active,
         div[data-testid="stButton"] button:active,
         div[data-testid="stFormSubmitButton"] > button:active,
         div[data-testid="stFormSubmitButton"] button:active {
-            background: #173b64 !important;
-            border-color: #173b64 !important;
-            color: #ffffff !important;
+            background:#173b64 !important;
+            border-color:#173b64 !important;
+            color:#ffffff !important;
         }
-
-        /* Button focus */
         .stButton > button:focus,
         div[data-testid="stButton"] > button:focus,
         div[data-testid="stFormSubmitButton"] > button:focus {
-            color: #ffffff !important;
-            box-shadow: 0 0 0 3px rgba(36,90,146,.22) !important;
+            color:#ffffff !important;
+            box-shadow:0 0 0 3px rgba(36,90,146,.22) !important;
         }
-
-        /* This is the important part. Streamlit often puts text inside p/span. */
         .stButton > button p,
         .stButton > button span,
         div[data-testid="stButton"] button p,
         div[data-testid="stButton"] button span,
         div[data-testid="stFormSubmitButton"] button p,
         div[data-testid="stFormSubmitButton"] button span {
-            color: #ffffff !important;
-            font-weight: 800 !important;
+            color:#ffffff !important;
+            font-weight:800 !important;
         }
-
-        /* Disabled buttons */
         .stButton > button:disabled,
         div[data-testid="stButton"] > button:disabled,
         div[data-testid="stButton"] button:disabled,
         div[data-testid="stFormSubmitButton"] > button:disabled,
         div[data-testid="stFormSubmitButton"] button:disabled {
-            background: #dde5ee !important;
-            border-color: #c9d4e2 !important;
-            color: #66768a !important;
-            box-shadow: none !important;
-            transform: none !important;
-            opacity: 1 !important;
+            background:#dde5ee !important;
+            border-color:#c9d4e2 !important;
+            color:#66768a !important;
+            box-shadow:none !important;
+            transform:none !important;
+            opacity:1 !important;
         }
-
-        /* Disabled nested text */
         .stButton > button:disabled p,
         .stButton > button:disabled span,
         div[data-testid="stButton"] button:disabled p,
         div[data-testid="stButton"] button:disabled span,
         div[data-testid="stFormSubmitButton"] button:disabled p,
         div[data-testid="stFormSubmitButton"] button:disabled span {
-            color: #66768a !important;
-            font-weight: 750 !important;
+            color:#66768a !important;
+            font-weight:750 !important;
         }
         div[data-testid="stTabs"] button { border-radius:999px; color:#4f6075; padding:.62rem 1rem; font-weight:700; }
         div[data-testid="stTabs"] button[aria-selected="true"] { background:var(--primary-soft); color:#1d4c7d; border:1px solid #b8cade; }

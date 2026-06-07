@@ -356,8 +356,33 @@ def _missing_points(
 def _join(items: List[str], limit: int = 4) -> str:
     return "; ".join(str(item) for item in (items or [])[:limit] if str(item).strip())
 
+SCAFFOLD_PHRASES = [
+    "a strong answer should",
+    "start from the exact numbers",
+    "the symptom should be separated",
+    "the decision should be validated",
+    "a production-ready answer should",
+    "for this topic, the decision should",
+    "the important distinction is not the label",
+]
 
-def _blueprint_by_type(topic_id: str, question_type: str, question: str, expected_focus: List[str]) -> str:
+
+def _looks_like_scaffold(text: str) -> bool:
+    text_l = _normalize(text)
+    return any(phrase in text_l for phrase in SCAFFOLD_PHRASES)
+
+
+def _safe_better_answer(text: str, question: str) -> str:
+    if not _looks_like_scaffold(text):
+        return text
+    return (
+        "The previous sample generator produced guidance instead of an answer. "
+        "Answer the exact question directly with the decision, evidence, trade-off, owner and action. "
+        f"Question to answer: {question}"
+    )
+
+
+def _blueprint_by_type(topic_id: str, question_type: str, question: str, expected_focus: List[str], question_id: str = "") -> str:
     """Build an actual sample answer from the expert blueprint.
 
     This intentionally avoids meta-text like "a stronger answer should...". The learner
@@ -454,6 +479,52 @@ def _blueprint_by_type(topic_id: str, question_type: str, question: str, expecte
             "I would tell a business stakeholder: a model explanation is like a clue, not a verdict. It can say the model paid attention to humidity when predicting defects, but it cannot prove humidity caused the defects or that changing humidity will fix them. The value is that it helps us ask better questions and investigate faster. The limit is that we still need domain review, data checks, and validation before acting. So explanations improve trust and debugging, but they must not bypass governance."
         )
 
+    q_l = _normalize(question)
+
+    if topic_id == "checkpoint_ml_architect_001":
+        if question_id == "q1" or "validation" in q_l:
+            return (
+                "For a time- and line-dependent manufacturing dataset, I would not use random cross-validation as the approval split because it can mix future conditions and repeated line behavior across train and validation. I would use a time-based split first: train on earlier months and validate on later months. If the model must generalize to new or weakly represented lines, I would add a group holdout by production line. I would also run leakage checks to ensure no post-event labels, future aggregates, maintenance actions, or line-specific identifiers unavailable at prediction time enter training."
+            )
+        if question_id == "q2" or "operating point" in q_l or "inspection-capacity" in q_l:
+            return (
+                "For rare defects, I would select the operating point from PR-curve evidence rather than accuracy. First, define the minimum recall needed to limit missed defects. Then compare thresholds that meet that recall and check precision plus alert volume against inspection capacity. A low threshold may catch more defects but overload inspectors with false positives. A high threshold may reduce workload but miss expensive defects. I would approve the highest threshold that meets minimum recall while keeping alerts within capacity, using locked validation/test evidence and quality-owner review."
+            )
+        if question_id == "q3" or "label" in q_l or "sampling" in q_l:
+            return (
+                "A technically strong model can fail if the labels or sample are not trustworthy. Label inconsistency means the same defect pattern is marked differently by inspectors, plants, shifts, or review rules, so the model learns noise. Sampling bias means the training data misses important deployment segments such as night shift, a new line, rare supplier, or difficult defect type. I would inspect label-disagreement rate, reviewer guidelines, class balance, segment coverage, and performance slices by plant, line, shift, supplier, and defect type. The prevention is a data/label quality gate owned by the data and quality owners."
+            )
+        if question_id == "q4" or "governance" in q_l or "monitoring" in q_l:
+            return (
+                "I would release the model only with an approved evidence pack: time/group validation, leakage check, threshold decision record, calibration evidence, data/label audit, and segment-level error analysis. The ML owner monitors recall, precision, calibration drift, input drift, false negatives, and alert volume. The quality/process owner monitors escaped defects, rework rate, inspection capacity, and operational response. If recall drops below the approved limit, alert volume exceeds capacity, or a segment shows repeated false negatives, fallback actions are human review, threshold rollback, deployment pause, or retraining review."
+            )
+        if question_id == "q5" or "go-live" in q_l or "recommendation" in q_l:
+            return (
+                "My recommendation would be conditional go-live, not unrestricted deployment. I would approve only if the model passes honest time and line validation, meets the minimum recall for rare defects, keeps alert volume within inspection capacity, has acceptable calibration evidence, and clears data and label quality gates. If any evidence is weak, I would run a controlled pilot with human review. The approval artifacts are the validation report, threshold decision note, calibration report, error-analysis table, monitoring plan, model card, and architecture decision record."
+            )
+
+    if topic_id == "capstone_ml_architect_001":
+        if question_id == "q1" or "decision user" in q_l or "success/failure costs" in q_l:
+            return (
+                "The predictive-quality problem is to identify high-risk units before final inspection on a manufacturing line, for example a tube-forming or assembly line where missed defects cause scrap, rework, warranty claims, or customer quality issues. The model outcome is a defect-risk score for each unit or batch. The decision user is the shift quality lead or process owner, who decides whether to inspect, hold, escalate, or release the unit. A false negative means a defective unit may escape; a false positive means unnecessary inspection and operator workload. Success means catching avoidable defects early while staying within inspection capacity."
+            )
+        if question_id == "q2" or "validation" in q_l or "feature pipeline" in q_l:
+            return (
+                "I would create an evidence pack covering validation, baseline, feature pipeline, and model comparison. Validation should use an honest split: train on earlier data and validate on later data, with line or plant holdout where deployment requires generalization to new production lines. The baseline should be a simple rule or model, such as recent defect rate by line or logistic regression, so the ML model proves incremental value. The feature pipeline should define allowed input features, missing-value handling, encoding, scaling, and leakage checks. Model comparison should include precision, recall, PR-AUC, F1, calibration, and segment results."
+            )
+        if question_id == "q3" or "threshold" in q_l or "error-analysis" in q_l:
+            return (
+                "I would choose the threshold using PR evidence because defects are rare. The threshold must meet minimum recall for missed-defect risk while keeping false positives within inspection capacity. After selecting a candidate threshold, I would analyze false negatives and false positives by plant, line, shift, supplier, product family, and defect type. If failures cluster in a segment, the fix may be data coverage, label audit, feature correction, or threshold adjustment. Explainability should support investigation, but no process change should be made from feature importance alone without domain validation."
+            )
+        if question_id == "q4" or "monitoring" in q_l or "fallback" in q_l:
+            return (
+                "The ML owner monitors model metrics: recall, precision, F1, calibration drift, input drift, and false negatives. The quality/process owner monitors business impact: alert volume, inspection capacity, escaped defects, and rework rate. Segment dashboards should track these by plant, line, shift, supplier, and defect type. If recall drops below the approved threshold, alert volume exceeds capacity, or a segment shows repeated false negatives, the fallback is human review, threshold rollback, deployment pause, or retraining review. Retraining should require evidence of drift, data change, or label-quality correction."
+            )
+        if question_id == "q5" or "architecture recommendation" in q_l or "artifacts" in q_l:
+            return (
+                "My recommendation is conditional go-live through a controlled pilot, not unrestricted production rollout. I would approve the architecture only if validation shows generalization across time and production lines, the threshold meets minimum recall while staying within inspection capacity, calibration is acceptable for risk-tier decisions, and data/label quality gates are passed. Key risks are missed defects, excessive false alarms, segment-level failure, calibration drift, and label delay. Required artifacts are the architecture decision record, model card, validation report, threshold decision note, error-analysis table, calibration report, and monitoring plan. ML owns model behavior; quality/process owners own operational action and release approval."
+            )
+
     if question_type == "concept_check":
         return (
             f"{definition or title}. In practical terms, the mechanism is: {mechanism or focus}. "
@@ -494,8 +565,9 @@ def _fallback_better_answer(
     expected_focus: List[str],
     concept_note: ConceptNote,
     architect_note: ArchitectNote,
+    question_id: str = "",
 ) -> str:
-    return _blueprint_by_type(topic_id, question_type, question, expected_focus)
+    return _blueprint_by_type(topic_id, question_type, question, expected_focus, question_id)
 
 
 def _better_answer(
@@ -505,11 +577,12 @@ def _better_answer(
     expected_focus: List[str],
     concept_note: ConceptNote,
     architect_note: ArchitectNote,
+    question_id: str = "",
 ) -> str:
     golden = profile_golden_answer(topic_id, question_type)
     if golden:
         return golden
-    return _fallback_better_answer(topic_id, question_type, question, expected_focus, concept_note, architect_note)
+    return _fallback_better_answer(topic_id, question_type, question, expected_focus, concept_note, architect_note, question_id)
 
 def _why_better(question_type: str) -> str:
     if question_type == "tiny_hands_on":
@@ -599,14 +672,15 @@ def generate_answer_coaching(
                 "what_was_missing": display_missing,
                 "what_kept_from_5": _five_star_upgrade(question.type, concept_note.topic_id, question.question_id, question.question),
                 "evidence_bound_findings": misconception_hits,
-                "better_answer": _better_answer(
+                "better_answer": _safe_better_answer(_better_answer(
                     topic_id=concept_note.topic_id,
                     question_type=question.type,
                     question=question.question,
                     expected_focus=question.expected_focus,
                     concept_note=concept_note,
                     architect_note=architect_note,
-                ),
+                    question_id=question.question_id,
+                ), question.question),
                 "why_this_is_better": _why_better(question.type),
                 "architect_upgrade": _architect_upgrade(question.type, architect_note),
             }

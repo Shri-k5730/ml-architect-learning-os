@@ -515,24 +515,42 @@ def apply_practice_gate_to_evaluation(
 
     if is_gated_milestone:
         minimum_score = min(_score_values(evaluation))
-        if minimum_score < 3 or interpretation_score < 3 or evaluation.decision != "pass":
-            evaluation.decision = "revise"
-            evaluation.next_action = "retry_same_topic"
-            milestone_gap = (
-                f"{milestone_label} progression requires all core scores >= 3, Code Lab passed, "
-                "and production interpretation >= 3."
-            )
-            if milestone_gap not in evaluation.weak_spots:
-                evaluation.weak_spots.append(milestone_gap)
-            lock_reason = (
-                "Capstone remains locked until the ML Architect checkpoint is cleanly passed."
-                if is_checkpoint and topic_id == "checkpoint_ml_architect_001"
-                else "Next progression remains locked until this milestone is cleanly passed."
-            )
-            evaluation.decision_reason = (
-                evaluation.decision_reason
-                + f" {milestone_label} gate applied: {lock_reason}"
-            )
+        milestone_gap = (
+            f"{milestone_label} progression requires all core scores >= 3, Code Lab passed, "
+            "and production interpretation >= 3."
+        )
+
+        # IMPORTANT: the visible milestone rule is the source of truth.
+        # Older logic also required the LLM's decision string to be exactly "pass",
+        # which incorrectly forced revise even when all displayed gate conditions
+        # were satisfied (all core scores >= 3, code passed, interpretation >= 3).
+        if minimum_score >= 3 and interpretation_score >= 3:
+            if evaluation.decision in {"revise", "fail_prereq"}:
+                evaluation.decision = "borderline"
+                evaluation.next_action = "reinforce_and_continue"
+                override_note = (
+                    f"{milestone_label} gate override applied: displayed progression requirements were met, "
+                    "so this milestone is marked complete with reinforcement recommended."
+                )
+                if override_note not in evaluation.strengths:
+                    evaluation.strengths.append(override_note)
+                evaluation.decision_reason = (evaluation.decision_reason + " " + override_note).strip()
+            return evaluation
+
+        # If any published gate condition is not met, the milestone genuinely stays locked.
+        evaluation.decision = "revise"
+        evaluation.next_action = "retry_same_topic"
+        if milestone_gap not in evaluation.weak_spots:
+            evaluation.weak_spots.append(milestone_gap)
+        lock_reason = (
+            "Capstone remains locked until the ML Architect checkpoint is cleanly passed."
+            if is_checkpoint and topic_id == "checkpoint_ml_architect_001"
+            else "Next progression remains locked until this milestone is cleanly passed."
+        )
+        evaluation.decision_reason = (
+            evaluation.decision_reason
+            + f" {milestone_label} gate applied: {lock_reason}"
+        )
 
     return evaluation
 

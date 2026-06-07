@@ -236,7 +236,8 @@ Evaluation rules:
 20. A topic-specific answer can be concise, but it must not contain a core conceptual falsehood. Penalize conceptual mistakes such as: calibration as confidence instead of observed-frequency honesty; ranking as iteration performance; AUC as deployment threshold; scores compared directly to 0/1 instead of thresholded predictions; random CV treated as valid for unseen-line rollout; or input features called hyperparameters.
 21. For score/probability/threshold topics, separate ranking, probability calibration, threshold decision, precision/recall, and operational capacity. Do not merge them into generic 'model confidence'.
 22. If the learner's recent pattern indicates many borderline passes, prefer reinforce_and_continue over next_topic unless the response shows clear mastery.
-23. Decide one action only: pass, borderline, revise, or fail_prereq.
+23. For checkpoint or capstone milestones, do not choose revise when all four core scores are at least 3 and the practice/code evidence passes. Use borderline when the answer is acceptable but still needs reinforcement. Use revise only when a published gate condition is not met or a core score is below 3.
+24. Decide one action only: pass, borderline, revise, or fail_prereq.
 13. Borderline means the learner can progress but should improve the topic later.
 14. Rewrite only the parts of the note that need correction.
 15. Return strict JSON only.
