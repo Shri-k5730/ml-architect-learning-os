@@ -430,12 +430,16 @@ def topic_status_map(progress_rows: List[Dict[str, str]]) -> Dict[str, str]:
     return {str(row.get("topic_id", "")): str(row.get("status", "")) for row in progress_rows}
 
 
-def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str, str]]) -> bool:
-    """Ignore accidental active runs for topics already completed.
+def is_stale_awaiting_run(
+    run_dir: Optional[Path],
+    progress_rows: List[Dict[str, str]],
+    rewards_state: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Ignore active run cache when durable mastery says the topic is already done.
 
-    Patch 007 exposed a selector bug that could create a new awaiting run for
-    mlf_001 even after it was completed. The dirty run should not block the next
-    checkpoint once durable progress says that topic is completed.
+    V2.3 rule: best mastery wins. A stale local awaiting run for a topic that
+    already has best_stars >= 3 must not hijack the Current Level screen.
+    A genuine active repair for a topic below mastery is still allowed.
     """
     if run_dir is None:
         return False
@@ -447,8 +451,12 @@ def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str,
     phase = str(state.get("phase") or "")
     if phase != "awaiting_user_answers" or not topic_id:
         return False
-    if state.get("redo_mode") is True or str(state.get("selection_mode") or "") == "retry":
-        return False
+
+    row = next((r for r in progress_rows if str(r.get("topic_id") or "") == topic_id), None)
+    if row and v23_is_mastered(row, rewards_state):
+        return True
+
+    # Older logic fallback for legacy rows without best_stars/reward state.
     return topic_status_map(progress_rows).get(topic_id) == "completed"
 
 
@@ -2117,7 +2125,7 @@ sync_latest_evaluation_from_supabase()
 
 awaiting_run = find_latest_run("awaiting_user_answers")
 stale_awaiting_run = None
-if is_stale_awaiting_run(awaiting_run, progress_rows):
+if is_stale_awaiting_run(awaiting_run, progress_rows, rewards_state):
     stale_awaiting_run = awaiting_run
     awaiting_run = None
 
@@ -2143,8 +2151,8 @@ if awaiting_run is not None:
 elif stale_awaiting_run is not None:
     stale_state = load_json(stale_awaiting_run / "run_state.json")
     st.info(
-        f"Ignored stale active run for completed topic . {stale_state.get('topic_id')} . "
-        "Start Next Lesson will use repaired Supabase progress."
+        f"Ignored stale active run for mastered topic . {stale_state.get('topic_id')} . "
+        "V2.3 will continue from the real repair queue."
     )
 
 action_c1, action_c2 = st.columns([1, 1])
