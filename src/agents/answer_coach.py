@@ -10,6 +10,7 @@ from src.agents.topic_coaching_profiles import (
 from src.blueprints.advanced_ml import get_blueprint
 from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
 from src.utils.supabase_store import fetch_topic_learning_design
+from src.utils.v23_tutor_quality import sample_answer_for_task
 from src.schemas import (
     ArchitectNote,
     Assessment,
@@ -579,6 +580,10 @@ def _better_answer(
     architect_note: ArchitectNote,
     question_id: str = "",
 ) -> str:
+    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    sample = sample_answer_for_task(learning_design, question_id)
+    if sample:
+        return sample
     golden = profile_golden_answer(topic_id, question_type)
     if golden:
         return golden

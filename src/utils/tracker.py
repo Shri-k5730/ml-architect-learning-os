@@ -143,40 +143,208 @@ def _choose_best_progress_rows(
     table_rows: list[Dict[str, str]],
     state_rows: list[Dict[str, str]],
 ) -> list[Dict[str, str]]:
-    """Choose V2-composed rows over stale snapshot rows.
+    """Choose the least stale progress source.
 
-    Earlier patches preferred the source with more completed items.  That was
-    reasonable for recovery, but wrong after V2: completion now means mastered
-    core scores >= 3, not merely an old borderline pass.  The composed table
-    keeps all score history and reapplies the current policy, so prefer it when
-    available.
+    A stale mlos_learner_progress table can regress the learner to mlf_001.
+    Prefer whichever source has more completed lessons; if tied, prefer the
+    table because it is the newer normalized V2 structure.
     """
-    if table_rows:
+    if not table_rows and not state_rows:
+        return []
+    if not table_rows:
+        return state_rows
+    if not state_rows:
         return table_rows
-    return state_rows
+
+    table_completed = _completed_count(table_rows)
+    state_completed = _completed_count(state_rows)
+
+    if state_completed > table_completed:
+        return state_rows
+    if table_completed > state_completed:
+        return table_rows
+
+    # Tie-breaker: prefer the source with an unlocked incomplete item. If only
+    # one source has a playable next item, use that one. Otherwise use table.
+    table_unlocked = _unlocked_incomplete_count(table_rows)
+    state_unlocked = _unlocked_incomplete_count(state_rows)
+    if state_unlocked > table_unlocked:
+        return state_rows
+    return table_rows
 
 
-def _fetch_latest_evaluation_state() -> Optional[Dict[str, Any]]:
+
+def _score_from_run_state(run_state: Dict[str, Any], key: str) -> Optional[int]:
     try:
-        from src.utils.supabase_store import fetch_state
-        state = fetch_state("latest_evaluation")
-        return state if isinstance(state, dict) else None
+        value = (run_state.get("scores") or {}).get(key)
+        if value is None or value == "":
+            return None
+        return int(float(value))
     except Exception:
         return None
 
 
-def _compose_progress_from_supabase_tables() -> list[Dict[str, str]]:
-    """Compose V2 progress from catalog + learner progress, then apply V2 policy.
+def _fetch_evaluation_mastery_from_runs() -> Dict[str, Dict[str, Any]]:
+    """Return latest and best scored evaluation per topic from durable run history.
 
-    The old implementation enforced a strict linear path and converted every
-    topic after the first weak topic to locked.  That caused the visible reset:
-    Completed Levels=0, Needs Attention=0, and old active lessons hijacking the
-    screen.  V2.2 keeps the score history, marks weak attempted lessons as
-    revise, and locks capstone/DL by policy.
+    V2.3 distinction:
+    - latest attempt is useful for coaching;
+    - best mastered attempt controls progression.
     """
     try:
+        from src.utils.supabase_store import fetch_latest_runs, supabase_enabled
+
+        if not supabase_enabled():
+            return {}
+        runs = fetch_latest_runs(limit=1000)
+    except Exception:
+        return {}
+
+    by_topic: Dict[str, Dict[str, Any]] = {}
+    for run in runs:
+        if str(run.get("phase") or "") != "evaluation_complete":
+            continue
+        topic_id = str(run.get("topic_id") or "").strip()
+        if not topic_id:
+            continue
+        state = run.get("run_state") or {}
+        if not isinstance(state, dict):
+            continue
+        scores = {
+            "last_score_conceptual": _score_from_run_state(state, "conceptual_clarity"),
+            "last_score_practical": _score_from_run_state(state, "practical_reasoning"),
+            "last_score_architect": _score_from_run_state(state, "architect_reasoning"),
+            "last_score_communication": _score_from_run_state(state, "communication"),
+        }
+        present = [v for v in scores.values() if v is not None]
+        if len(present) < 4:
+            continue
+        min_core = min(present)
+        avg_core = sum(present) / len(present)
+        record = {
+            "run_id": run.get("run_id"),
+            "topic_id": topic_id,
+            "status": run.get("status") or state.get("status"),
+            "decision": state.get("status") or run.get("status"),
+            "updated_at": run.get("updated_at") or run.get("created_at"),
+            "scores": scores,
+            "min_core": min_core,
+            "avg_core": avg_core,
+        }
+        bucket = by_topic.setdefault(topic_id, {"latest": None, "best": None})
+        # fetch_latest_runs is newest first, so first seen is latest.
+        if bucket["latest"] is None:
+            bucket["latest"] = record
+        best = bucket.get("best")
+        if best is None or (min_core, avg_core) > (best.get("min_core", 0), best.get("avg_core", 0)):
+            bucket["best"] = record
+    return by_topic
+
+
+def _apply_v23_best_mastery(rows: list[Dict[str, str]]) -> list[Dict[str, str]]:
+    mastery = _fetch_evaluation_mastery_from_runs()
+    if not mastery:
+        return rows
+
+    for row in rows:
+        topic_id = str(row.get("topic_id") or "")
+        info = mastery.get(topic_id) or {}
+        latest = info.get("latest") or {}
+        best = info.get("best") or {}
+        if not latest and not best:
+            continue
+
+        if latest.get("updated_at"):
+            row["last_attempted_at"] = str(latest.get("updated_at") or "")
+        if latest.get("run_id"):
+            row["last_run_id"] = str(latest.get("run_id") or "")
+
+        # Progression is controlled by best mastery, not the latest redo failure.
+        if best.get("min_core", 0) >= 3:
+            row["status"] = "completed"
+            row["last_decision"] = "mastered_best_attempt"
+            for key, value in (best.get("scores") or {}).items():
+                if value is not None:
+                    row[key] = str(value)
+            if not row.get("completed_at"):
+                row["completed_at"] = str(best.get("updated_at") or utc_now_iso())
+            continue
+
+        # No mastered attempt exists. Keep the latest scores and mark for repair.
+        if latest:
+            row["status"] = "needs_attention"
+            row["last_decision"] = str(latest.get("status") or "revise")
+            for key, value in (latest.get("scores") or {}).items():
+                if value is not None:
+                    row[key] = str(value)
+            row["completed_at"] = ""
+    return rows
+
+
+def _apply_v23_repair_unlocks(rows: list[Dict[str, str]]) -> list[Dict[str, str]]:
+    """Unlock repair queue while keeping checkpoints/capstone/DL gated.
+
+    The learner is in mastery-repair mode. Blocking every later ML repair item
+    behind the first weak lesson creates the false impression that only one item
+    exists. V2.3 unlocks all ML repair cards and gates only checkpoints/capstone/DL.
+    """
+    def mastered(row: Dict[str, str]) -> bool:
+        try:
+            scores = [int(float(row.get(k) or 0)) for k in [
+                "last_score_conceptual", "last_score_practical", "last_score_architect", "last_score_communication"
+            ]]
+            return str(row.get("status") or "") == "completed" and min(scores) >= 3
+        except Exception:
+            return str(row.get("status") or "") == "completed"
+
+    ml_rows = [r for r in rows if str(r.get("topic_id") or "").startswith("mlf_")]
+    all_ml_mastered = bool(ml_rows) and all(mastered(r) for r in ml_rows)
+    checkpoint_arch = next((r for r in rows if r.get("topic_id") == "checkpoint_ml_architect_001"), None)
+    checkpoint_arch_mastered = bool(checkpoint_arch and mastered(checkpoint_arch))
+    capstone = next((r for r in rows if r.get("topic_id") == "capstone_ml_architect_001"), None)
+    capstone_mastered = bool(capstone and mastered(capstone))
+
+    for row in rows:
+        topic_id = str(row.get("topic_id") or "")
+        status = str(row.get("status") or "").strip().lower()
+        if topic_id.startswith("mlf_"):
+            row["prerequisites_unlocked"] = "true"
+            if status in {"revise", "borderline"}:
+                row["status"] = "needs_attention"
+            elif not status:
+                row["status"] = "not_started"
+            continue
+
+        if topic_id == "checkpoint_ml_foundations_001":
+            row["prerequisites_unlocked"] = "true" if all(
+                mastered(r) for r in ml_rows if int(str(r.get("topic_id") or "mlf_000").split("_")[1]) <= 10
+            ) else "false"
+            if row["prerequisites_unlocked"] == "false" and row.get("status") != "completed":
+                row["status"] = "locked"
+            continue
+
+        if topic_id == "checkpoint_ml_architect_001":
+            row["prerequisites_unlocked"] = "true" if all_ml_mastered else "false"
+            if not all_ml_mastered and row.get("status") != "completed":
+                row["status"] = "locked"
+            continue
+
+        if topic_id == "capstone_ml_architect_001":
+            row["prerequisites_unlocked"] = "true" if (all_ml_mastered and checkpoint_arch_mastered) else "false"
+            if row["prerequisites_unlocked"] == "false" and row.get("status") != "completed":
+                row["status"] = "locked"
+            continue
+
+        if topic_id.startswith("dl_"):
+            row["prerequisites_unlocked"] = "true" if capstone_mastered and topic_id == "dl_001" else "false"
+            if not capstone_mastered and row.get("status") != "completed":
+                row["status"] = "locked"
+            continue
+    return rows
+
+def _compose_progress_from_supabase_tables() -> list[Dict[str, str]]:
+    try:
         from src.utils.supabase_store import fetch_learner_progress_rows, supabase_enabled
-        from src.utils.v2_progress_rebuilder import rebuild_v2_progress_state
 
         if not supabase_enabled():
             return []
@@ -186,13 +354,35 @@ def _compose_progress_from_supabase_tables() -> list[Dict[str, str]]:
             return []
 
         progress_rows = fetch_learner_progress_rows()
-        latest_evaluation = _fetch_latest_evaluation_state()
-        rebuilt, _active_topic_id = rebuild_v2_progress_state(
-            topic_catalog_rows=catalog,
-            progress_rows=progress_rows,
-            latest_evaluation=latest_evaluation,
-        )
-        return [_normalize_progress_row(row) for row in rebuilt]
+        progress_by_topic = {str(row.get("topic_id")): row for row in progress_rows}
+
+        rows: list[Dict[str, str]] = []
+        for idx, topic in enumerate(catalog):
+            progress = progress_by_topic.get(topic["topic_id"], {})
+            default_unlocked = idx == 0
+            row = {
+                "topic_id": topic["topic_id"],
+                "title": topic.get("title", ""),
+                "domain": topic.get("domain", ""),
+                "difficulty": str(topic.get("difficulty", "")),
+                "status": str(progress.get("status") or ("not_started" if default_unlocked else "locked")),
+                "attempt_count": str(progress.get("attempt_count") or 0),
+                "last_score_conceptual": str(progress.get("last_score_conceptual") or ""),
+                "last_score_practical": str(progress.get("last_score_practical") or ""),
+                "last_score_architect": str(progress.get("last_score_architect") or ""),
+                "last_score_communication": str(progress.get("last_score_communication") or ""),
+                "last_score_coding": str(progress.get("last_score_coding") or ""),
+                "last_decision": str(progress.get("last_decision") or ""),
+                "prerequisites_unlocked": "true" if default_unlocked else "false",
+                "last_attempted_at": str(progress.get("last_attempted_at") or ""),
+                "completed_at": str(progress.get("completed_at") or ""),
+            }
+            if row["status"] == "completed":
+                row["prerequisites_unlocked"] = "true"
+            rows.append(_normalize_progress_row(row))
+
+        rows = _apply_v23_best_mastery(rows)
+        return _apply_v23_repair_unlocks(rows)
     except Exception:
         return []
 
@@ -235,7 +425,7 @@ def hydrate_progress_from_supabase_if_available() -> bool:
     if not rows:
         return False
 
-    normalized = [_normalize_progress_row(row) for row in rows]
+    normalized = _apply_v23_repair_unlocks(_apply_v23_best_mastery([_normalize_progress_row(row) for row in rows]))
     _write_csv_rows(PROGRESS_TRACKER_PATH, normalized, PROGRESS_FIELDS)
 
     # If the repaired state is ahead of the normalized table, backfill the table.

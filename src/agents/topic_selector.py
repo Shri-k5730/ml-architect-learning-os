@@ -70,7 +70,7 @@ def _select_requested_topic(
 
     if is_redo and status != "completed":
         raise TopicSelectorError(
-            f"Redo is allowed only for completed topics. Requested topic '{requested_topic_id}' has status '{status}'."
+            f"Redo is allowed only for mastered/completed topics. Requested topic '{requested_topic_id}' has status '{status}'. Use Repair for needs-attention topics."
         )
 
     if status == "locked" or not unlocked:
@@ -95,24 +95,12 @@ def _select_requested_topic(
     )
 
 
-def _latest_evaluation_state() -> Optional[Dict[str, str]]:
-    try:
-        from src.utils.supabase_store import fetch_state, supabase_enabled
-        if not supabase_enabled():
-            return None
-        state = fetch_state("latest_evaluation")
-        return state if isinstance(state, dict) else None
-    except Exception:
-        return None
-
-
 def select_topic(requested_topic_id: Optional[str] = None) -> SelectedTopic:
-    """Select the next topic using the V2.2 learning policy.
+    """Select the next playable topic from repaired durable progress.
 
-    The old selector simply picked the first unlocked incomplete row.  That made
-    redo failures and stale active runs fight each other.  V2.2 delegates the
-    repair target to select_active_topic: latest failed redo first, then earliest
-    weak lesson, then first unlocked new lesson.
+    Completed topics are skipped. The first unlocked incomplete item in catalog
+    order is selected. This includes checkpoints, so mlf_010 should lead to
+    checkpoint_ml_foundations_001, not a replay of mlf_001.
     """
     topic_catalog = _read_topic_catalog()
     progress_rows = _read_progress_rows()
@@ -124,26 +112,12 @@ def select_topic(requested_topic_id: Optional[str] = None) -> SelectedTopic:
             progress_rows=progress_rows,
         )
 
-    try:
-        from src.utils.v2_learning_policy import select_active_topic
-        active_topic_id = select_active_topic(progress_rows, latest_evaluation=_latest_evaluation_state())
-        if active_topic_id:
-            topic = _get_topic_by_id(topic_catalog, active_topic_id)
-            return SelectedTopic(
-                selected_topic_id=topic.topic_id,
-                reason=f"Selected V2.2 active repair/start target '{topic.topic_id}'.",
-                selection_mode="next_unlocked",
-                prerequisite_gap=None,
-            )
-    except Exception:
-        pass
-
     for row in progress_rows:
         status = row.get("status", "")
         unlocked = row.get("prerequisites_unlocked", "").lower() == "true"
         if status == "completed":
             continue
-        if unlocked and status in {"not_started", "in_progress", "revise", "borderline"}:
+        if unlocked and status in {"not_started", "unlocked", "in_progress", "revise", "needs_attention", "borderline"}:
             topic = _get_topic_by_id(topic_catalog, row["topic_id"])
             return SelectedTopic(
                 selected_topic_id=topic.topic_id,

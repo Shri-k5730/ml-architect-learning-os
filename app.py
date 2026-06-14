@@ -28,8 +28,10 @@ from src.agents.tutor_narrative import get_tutor_narrative
 from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources, fetch_topic_learning_design, fetch_state
+from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources, fetch_topic_learning_design
 from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
+from src.utils.v23_mastery_policy import display_status as v23_display_status, needs_repair as v23_needs_repair, is_mastered as v23_is_mastered
+from src.utils.v23_tutor_quality import enhance_learning_design
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -428,31 +430,13 @@ def topic_status_map(progress_rows: List[Dict[str, str]]) -> Dict[str, str]:
     return {str(row.get("topic_id", "")): str(row.get("status", "")) for row in progress_rows}
 
 
-def latest_evaluation_payload_for_policy() -> Optional[Dict[str, Any]]:
-    """Return latest evaluation state in the shape required by V2 policy."""
-    local_run = find_latest_run("evaluation_complete")
-    if local_run is not None:
-        try:
-            return load_json(local_run / "run_state.json")
-        except Exception:
-            pass
-    try:
-        state = fetch_state("latest_evaluation")
-        return state if isinstance(state, dict) else None
-    except Exception:
-        return None
-
-
-def v2_active_topic_id(progress_rows: List[Dict[str, str]]) -> Optional[str]:
-    try:
-        from src.utils.v2_learning_policy import select_active_topic
-        return select_active_topic(progress_rows, latest_evaluation=latest_evaluation_payload_for_policy())
-    except Exception:
-        return None
-
-
 def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str, str]]) -> bool:
-    """Ignore active runs that conflict with durable V2 progression policy."""
+    """Ignore accidental active runs for topics already completed.
+
+    Patch 007 exposed a selector bug that could create a new awaiting run for
+    mlf_001 even after it was completed. The dirty run should not block the next
+    checkpoint once durable progress says that topic is completed.
+    """
     if run_dir is None:
         return False
     try:
@@ -463,11 +447,6 @@ def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str,
     phase = str(state.get("phase") or "")
     if phase != "awaiting_user_answers" or not topic_id:
         return False
-
-    policy_topic = v2_active_topic_id(progress_rows)
-    if policy_topic and policy_topic != topic_id:
-        return True
-
     if state.get("redo_mode") is True or str(state.get("selection_mode") or "") == "retry":
         return False
     return topic_status_map(progress_rows).get(topic_id) == "completed"
@@ -778,10 +757,10 @@ def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Op
 
     completed_rows = [
         row for row in progress_rows
-        if row.get("topic_id") and str(row.get("status") or "").strip().lower() == "completed"
+        if row.get("topic_id") and v23_display_status(row, rewards_state) in {"completed", "needs_attention"}
     ]
     if not completed_rows:
-        st.info("No completed lessons are available for review or redo yet.")
+        st.info("No reviewed or repairable lessons are available yet.")
         return
 
     topic_options = [row.get("topic_id") for row in completed_rows if row.get("topic_id")]
@@ -790,7 +769,7 @@ def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Op
         default_topic = topic_options[0]
 
     topic_label_map = {
-        row.get("topic_id"): f"{row.get('topic_id')} · {row.get('title')} · completed"
+        row.get("topic_id"): f"{row.get('topic_id')} · {row.get('title')} · {v23_display_status(row, rewards_state)}"
         for row in completed_rows
         if row.get("topic_id")
     }
@@ -803,7 +782,7 @@ def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Op
     st.session_state.review_topic_id = selected_topic_id
 
     topic_row = next((row for row in completed_rows if row.get("topic_id") == selected_topic_id), {})
-    status = str(topic_row.get("status") or "")
+    status = v23_display_status(topic_row, rewards_state)
     topic_reward = get_topic_reward_state(rewards_state, selected_topic_id)
 
     c1, c2, c3, c4 = st.columns(4)
@@ -816,8 +795,14 @@ def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Op
     if awaiting_run is not None:
         active_state = load_json(awaiting_run / "run_state.json")
         st.warning(f"Finish the active lesson first: {active_state.get('topic_id')} · {active_state.get('run_id')}")
-    elif status != "completed":
-        st.info("Redo is enabled for completed topics only. Use Start Next Lesson for the current unlocked topic.")
+    elif status == "needs_attention":
+        st.caption("This starts a repair attempt for a topic below mastery. It does not erase history.")
+        if st.button(f"Start Repair Attempt · {selected_topic_id}", use_container_width=True, type="primary"):
+            with st.spinner(f"Starting repair attempt for {selected_topic_id}..."):
+                ok, output = start_lesson_for_topic(selected_topic_id, allow_completed_restart=False)
+            record_action_result("Start Repair Attempt", ok, output)
+            if ok:
+                st.rerun()
     else:
         st.caption("This creates a fresh run for the same topic. It does not erase the old attempt. XP/rewards only improve if the new completed attempt beats the previous best.")
         if st.button(f"Start Redo Attempt · {selected_topic_id}", use_container_width=True, type="secondary"):
@@ -1190,8 +1175,10 @@ def status_chip(status: str) -> str:
     mapping = {
         "locked": "🔒 Locked",
         "not_started": "🟦 Unlocked",
+        "unlocked": "🟦 Unlocked",
+        "needs_attention": "🟥 Needs Attention",
         "in_progress": "🟨 In Progress",
-        "completed": "🟩 Completed",
+        "completed": "🟩 Mastered",
         "borderline": "🟧 Borderline",
         "revise": "🟥 Revise",
     }
@@ -1214,8 +1201,8 @@ def topic_needs_attention(row: Dict[str, str], rewards_state: Optional[Dict[str,
     Needs Attention should not mean only current status='revise'. A completed
     2-star/borderline lesson with practical=2 still needs attention.
     """
-    status = str(row.get("status") or "").strip().lower()
-    if status == "revise":
+    status = v23_display_status(row, rewards_state)
+    if status == "needs_attention":
         return True
     if status not in {"completed", "borderline"}:
         return False
@@ -1242,17 +1229,17 @@ def topic_needs_attention(row: Dict[str, str], rewards_state: Optional[Dict[str,
 
 
 def compute_overall_metrics(progress_rows: List[Dict[str, str]], rewards_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    completed = sum(1 for row in progress_rows if row.get("status") == "completed")
-    borderline = sum(1 for row in progress_rows if row.get("status") == "borderline")
-    revise = sum(1 for row in progress_rows if row.get("status") == "revise")
+    completed = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) == "completed")
+    borderline = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) == "borderline")
+    revise = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) in {"revise", "needs_attention"})
     needs_attention_rows = [row for row in progress_rows if topic_needs_attention(row, rewards_state)]
     unlocked = sum(
         1
         for row in progress_rows
         if row.get("prerequisites_unlocked", "").lower() == "true"
-        and row.get("status") != "completed"
+        and v23_display_status(row, rewards_state) != "completed"
     )
-    locked = sum(1 for row in progress_rows if row.get("status") == "locked")
+    locked = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) == "locked")
 
     all_scores = []
     for row in progress_rows:
@@ -1617,8 +1604,11 @@ def render_topic_resources_panel(topic_id: str) -> None:
 
 
 def load_topic_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
-    """Supabase-authored design first; bundled design is a deploy-safe fallback."""
-    return fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    """Supabase-authored design first; bundled design is a deploy-safe fallback.
+
+    V2.3 enhances shallow designs at runtime so tutor depth matches assessment depth.
+    """
+    return enhance_learning_design(fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id))
 
 
 def render_learning_design_panel(topic_id: str) -> bool:
@@ -1659,16 +1649,12 @@ def render_learning_design_panel(topic_id: str) -> bool:
     if more_examples:
         st.markdown("#### Work through it")
         for example_idx, extra in enumerate(more_examples, start=1):
-            title = extra.get("title") or extra.get("label") or f"Worked example {example_idx}"
-            with st.expander(str(title), expanded=example_idx == 1):
-                if extra.get("scenario"):
-                    render_static_card("Scenario", extra.get("scenario"), "callout-good")
+            title = extra.get('title') or extra.get('label') or 'Reasoning steps'
+            with st.expander(f"Worked example {example_idx}: {title}", expanded=example_idx == 1):
                 steps = extra.get("steps", []) or []
                 if steps:
                     for step_idx, step in enumerate(steps, start=1):
                         st.markdown(f"**{step_idx}.** {step}")
-                if extra.get("reasoning"):
-                    render_static_card("Reasoning", extra.get("reasoning"))
                 elif extra.get("body"):
                     st.write(extra.get("body"))
 
@@ -1716,6 +1702,11 @@ def render_evidence_task_overview(learning_design: Optional[Dict[str, Any]], ass
             focus = meta.get("expected_focus", []) or []
             if focus:
                 st.markdown("**Evidence this task should reveal:** " + " · ".join(str(x) for x in focus))
+            if meta.get("sample_answer"):
+                with st.expander("See a 3-star sample answer after trying", expanded=False):
+                    st.write(meta.get("sample_answer"))
+            if meta.get("common_weak_answer"):
+                st.caption("Common weak pattern: " + str(meta.get("common_weak_answer")))
     st.info(str(learning_design.get("assessment_principle", "")))
 
 
@@ -1998,7 +1989,7 @@ def render_level_card(
 ) -> None:
     topic_id = row["topic_id"]
     title = row["title"]
-    status = row["status"]
+    status = v23_display_status(row, rewards_state)
     stars = compute_display_stars(row, rewards_state)
     badge = badge_label_for_topic(row, rewards_state)
     selected = topic_id == selected_topic_id
@@ -2092,7 +2083,7 @@ def render_latest_evaluation_panel() -> None:
 
 
 def is_playable_status(status: str) -> bool:
-    return status in {"not_started", "in_progress", "borderline", "revise", "completed"}
+    return status in {"not_started", "unlocked", "needs_attention", "in_progress", "borderline", "revise", "completed"}
 
 
 # -----------------------------
@@ -2117,7 +2108,6 @@ progress_rows = load_progress_tracker()
 rewards_state = load_rewards_state()
 catalog_source, catalog_count = load_topic_catalog_source()
 metrics = compute_overall_metrics(progress_rows, rewards_state)
-active_policy_topic_id = v2_active_topic_id(progress_rows)
 
 # Supabase is the system of record. Streamlit Cloud local files are only cache.
 # Rehydrate active/evaluation runs before local run discovery so sleep/redeploy
@@ -2153,12 +2143,9 @@ if awaiting_run is not None:
 elif stale_awaiting_run is not None:
     stale_state = load_json(stale_awaiting_run / "run_state.json")
     st.info(
-        f"Ignored stale active run . {stale_state.get('topic_id')} . "
-        f"V2.2 active target is {active_policy_topic_id or 'the repaired next topic'}."
+        f"Ignored stale active run for completed topic . {stale_state.get('topic_id')} . "
+        "Start Next Lesson will use repaired Supabase progress."
     )
-
-if awaiting_run is None and active_policy_topic_id:
-    st.caption(f"V2.2 active target: {active_policy_topic_id}")
 
 action_c1, action_c2 = st.columns([1, 1])
 
@@ -2212,7 +2199,7 @@ tabs = st.tabs(
 # -----------------------------
 with tabs[0]:
     st.subheader("Level Map")
-    st.caption("V2 flow is linear: lessons → gated checkpoints → capstone. Complete the active item to unlock the next one; completed cards support Review/Redo only.")
+    st.caption("V2.3 flow: repair every ML topic below 3-star mastery, then checkpoint → capstone → DL/NN. Mastered topics support Review/Redo; weak topics show Repair.")
 
     if not progress_rows:
         st.warning("No progress tracker found.")
@@ -2224,8 +2211,8 @@ with tabs[0]:
                 with cols[j]:
                     render_level_card(row, st.session_state.selected_topic_id, rewards_state)
                     topic_id = row.get("topic_id", "")
-                    status = row.get("status", "")
-                    if str(status or "").strip().lower() == "completed":
+                    status = v23_display_status(row, rewards_state)
+                    if status == "completed":
                         action_cols = st.columns(2)
                         with action_cols[0]:
                             if st.button("Review", key=f"review_{topic_id}", use_container_width=True, disabled=not topic_id):
@@ -2240,7 +2227,17 @@ with tabs[0]:
                                 if ok:
                                     st.rerun()
                     else:
-                        st.caption("Review/Redo appears after completion.")
+                        unlocked = str(row.get("prerequisites_unlocked") or "").strip().lower() == "true"
+                        if status in {"needs_attention", "revise", "borderline", "unlocked", "not_started"} and unlocked:
+                            button_label = "Repair" if status in {"needs_attention", "revise", "borderline"} else "Start"
+                            if st.button(button_label, key=f"repair_{topic_id}", use_container_width=True, disabled=awaiting_run is not None):
+                                with st.spinner(f"Starting {button_label.lower()} attempt for {topic_id}..."):
+                                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=False)
+                                record_action_result(f"Start {button_label} Attempt", ok, output)
+                                if ok:
+                                    st.rerun()
+                        else:
+                            st.caption("Locked until prerequisite mastery gate is met.")
 
     st.divider()
     st.subheader("Latest Result")

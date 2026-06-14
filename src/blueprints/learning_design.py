@@ -548,7 +548,14 @@ TOPIC_LEARNING_DESIGNS["capstone_ml_architect_001"] = design(
 
 def get_bundled_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
     data = TOPIC_LEARNING_DESIGNS.get(str(topic_id or ""))
-    return deepcopy(data) if data else None
+    if not data:
+        return None
+    copied = deepcopy(data)
+    try:
+        from src.utils.v23_tutor_quality import enhance_learning_design
+        return enhance_learning_design(copied)
+    except Exception:
+        return copied
 
 
 def has_bundled_learning_design(topic_id: str) -> bool:
