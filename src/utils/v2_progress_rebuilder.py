@@ -1,10 +1,4 @@
-"""
-MLOS V2 Progress Rebuilder
-
-Use this after loading Supabase topic catalog, learner progress rows, and latest_evaluation.
-It does not write to Supabase by itself. It returns normalized rows and active_topic_id
-for the Streamlit UI/state layer.
-"""
+"""MLOS V2.1 Progress Rebuilder."""
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -25,7 +19,6 @@ def merge_catalog_and_progress(
     topic_catalog_rows: Iterable[Dict[str, Any]],
     progress_rows: Iterable[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Merge catalog metadata into progress rows using topic_id as key."""
     progress_by_topic = {str(r.get("topic_id")): dict(r) for r in progress_rows}
     merged: List[Dict[str, Any]] = []
 
@@ -46,21 +39,11 @@ def rebuild_v2_progress_state(
     progress_rows: Iterable[Dict[str, Any]],
     latest_evaluation: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Return V2-classified progress rows and the correct active topic.
-
-    Priority is intentionally strict:
-    1. failed redo/revise topic remains active,
-    2. earliest needs_attention topic,
-    3. earliest unlocked topic.
-    """
     merged = merge_catalog_and_progress(topic_catalog_rows, progress_rows)
     classified: List[Dict[str, Any]] = []
-
-    # classify once with current rows, then again after status assignment for consistent gates
     for row in merged:
         new_row = dict(row)
         new_row["status"] = classify_progress_row(new_row, merged)
         classified.append(new_row)
-
     active_topic_id = select_active_topic(classified, latest_evaluation=latest_evaluation)
     return classified, active_topic_id
