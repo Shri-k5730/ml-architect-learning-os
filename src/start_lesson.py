@@ -383,6 +383,34 @@ def _abandon_stale_active_run(active_run: Path, active_state: Dict[str, Any]) ->
         pass
 
 
+def _latest_evaluation_state_for_policy() -> Optional[Dict[str, Any]]:
+    try:
+        from src.utils.supabase_store import fetch_state, supabase_enabled
+        if not supabase_enabled():
+            return None
+        state = fetch_state("latest_evaluation")
+        return state if isinstance(state, dict) else None
+    except Exception:
+        return None
+
+
+def _v2_active_topic_from_progress() -> Optional[str]:
+    try:
+        from src.utils.v2_learning_policy import select_active_topic
+        return select_active_topic(read_progress_rows(), latest_evaluation=_latest_evaluation_state_for_policy())
+    except Exception:
+        return None
+
+
+def _is_overridden_by_v2_active_policy(active_state: Dict[str, Any]) -> bool:
+    """Return True when an old awaiting run conflicts with the V2 repair target."""
+    active_topic = str(active_state.get("topic_id") or "").strip()
+    policy_topic = _v2_active_topic_from_progress()
+    if not active_topic or not policy_topic:
+        return False
+    return active_topic != policy_topic
+
+
 # -----------------------------
 # Deterministic fallbacks
 # -----------------------------
@@ -567,7 +595,7 @@ def main() -> None:
     if active_run is not None:
         active_state = load_json(active_run / "run_state.json")
         completed_topics = _completed_topics_from_progress()
-        if _is_stale_active_run(active_state, completed_topics):
+        if _is_stale_active_run(active_state, completed_topics) or _is_overridden_by_v2_active_policy(active_state):
             _abandon_stale_active_run(active_run, active_state)
         else:
             raise StartLessonError(

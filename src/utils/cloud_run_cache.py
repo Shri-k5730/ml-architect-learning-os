@@ -195,17 +195,40 @@ def _is_redo_run(row: Dict[str, Any]) -> bool:
     return run_state.get("redo_mode") is True or str(run_state.get("selection_mode") or "") == "retry"
 
 
+def _latest_evaluation_state_for_policy() -> Optional[Dict[str, Any]]:
+    try:
+        from src.utils.supabase_store import fetch_state
+        state = fetch_state("latest_evaluation")
+        return state if isinstance(state, dict) else None
+    except Exception:
+        return None
+
+
+def _v2_active_topic(progress_rows: Optional[List[Dict[str, str]]]) -> Optional[str]:
+    if not progress_rows:
+        return None
+    try:
+        from src.utils.v2_learning_policy import select_active_topic
+        return select_active_topic(progress_rows, latest_evaluation=_latest_evaluation_state_for_policy())
+    except Exception:
+        return None
+
+
 def sync_active_run_from_supabase(progress_rows: Optional[List[Dict[str, str]]] = None) -> Optional[Path]:
     if not supabase_enabled():
         return None
 
-    # There can be stale awaiting runs in Supabase from earlier bugs. Iterate
-    # recent candidates and materialize the first legitimate active run instead
-    # of letting one bad completed-topic run hide a newer valid lesson.
-    for row in fetch_latest_run_rows_by_phase("awaiting_user_answers", limit=10):
+    active_policy_topic = _v2_active_topic(progress_rows)
+
+    # If the latest evaluation says a topic must be repaired, stale awaiting runs
+    # for other topics must not be materialized.  This is the mlf_001 -> mlf_016
+    # jump you observed.
+    for row in fetch_latest_run_rows_by_phase("awaiting_user_answers", limit=20):
         topic_id = str(row.get("topic_id") or "").strip()
         status = str(row.get("status") or "").strip().lower()
         if status not in {"in_progress", "awaiting_user_answers", "started"}:
+            continue
+        if active_policy_topic and topic_id != active_policy_topic:
             continue
         if progress_rows is not None and _topic_status(progress_rows, topic_id) == "completed" and not _is_redo_run(row):
             continue

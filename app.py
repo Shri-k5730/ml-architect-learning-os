@@ -28,7 +28,7 @@ from src.agents.tutor_narrative import get_tutor_narrative
 from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources, fetch_topic_learning_design
+from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources, fetch_topic_learning_design, fetch_state
 from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
 
 
@@ -428,13 +428,31 @@ def topic_status_map(progress_rows: List[Dict[str, str]]) -> Dict[str, str]:
     return {str(row.get("topic_id", "")): str(row.get("status", "")) for row in progress_rows}
 
 
-def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str, str]]) -> bool:
-    """Ignore accidental active runs for topics already completed.
+def latest_evaluation_payload_for_policy() -> Optional[Dict[str, Any]]:
+    """Return latest evaluation state in the shape required by V2 policy."""
+    local_run = find_latest_run("evaluation_complete")
+    if local_run is not None:
+        try:
+            return load_json(local_run / "run_state.json")
+        except Exception:
+            pass
+    try:
+        state = fetch_state("latest_evaluation")
+        return state if isinstance(state, dict) else None
+    except Exception:
+        return None
 
-    Patch 007 exposed a selector bug that could create a new awaiting run for
-    mlf_001 even after it was completed. The dirty run should not block the next
-    checkpoint once durable progress says that topic is completed.
-    """
+
+def v2_active_topic_id(progress_rows: List[Dict[str, str]]) -> Optional[str]:
+    try:
+        from src.utils.v2_learning_policy import select_active_topic
+        return select_active_topic(progress_rows, latest_evaluation=latest_evaluation_payload_for_policy())
+    except Exception:
+        return None
+
+
+def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str, str]]) -> bool:
+    """Ignore active runs that conflict with durable V2 progression policy."""
     if run_dir is None:
         return False
     try:
@@ -445,6 +463,11 @@ def is_stale_awaiting_run(run_dir: Optional[Path], progress_rows: List[Dict[str,
     phase = str(state.get("phase") or "")
     if phase != "awaiting_user_answers" or not topic_id:
         return False
+
+    policy_topic = v2_active_topic_id(progress_rows)
+    if policy_topic and policy_topic != topic_id:
+        return True
+
     if state.get("redo_mode") is True or str(state.get("selection_mode") or "") == "retry":
         return False
     return topic_status_map(progress_rows).get(topic_id) == "completed"
@@ -1636,11 +1659,16 @@ def render_learning_design_panel(topic_id: str) -> bool:
     if more_examples:
         st.markdown("#### Work through it")
         for example_idx, extra in enumerate(more_examples, start=1):
-            with st.expander(f"Worked path {example_idx}: {extra.get('title', 'Reasoning steps')}", expanded=example_idx == 1):
+            title = extra.get("title") or extra.get("label") or f"Worked example {example_idx}"
+            with st.expander(str(title), expanded=example_idx == 1):
+                if extra.get("scenario"):
+                    render_static_card("Scenario", extra.get("scenario"), "callout-good")
                 steps = extra.get("steps", []) or []
                 if steps:
                     for step_idx, step in enumerate(steps, start=1):
                         st.markdown(f"**{step_idx}.** {step}")
+                if extra.get("reasoning"):
+                    render_static_card("Reasoning", extra.get("reasoning"))
                 elif extra.get("body"):
                     st.write(extra.get("body"))
 
@@ -2089,6 +2117,7 @@ progress_rows = load_progress_tracker()
 rewards_state = load_rewards_state()
 catalog_source, catalog_count = load_topic_catalog_source()
 metrics = compute_overall_metrics(progress_rows, rewards_state)
+active_policy_topic_id = v2_active_topic_id(progress_rows)
 
 # Supabase is the system of record. Streamlit Cloud local files are only cache.
 # Rehydrate active/evaluation runs before local run discovery so sleep/redeploy
@@ -2124,9 +2153,12 @@ if awaiting_run is not None:
 elif stale_awaiting_run is not None:
     stale_state = load_json(stale_awaiting_run / "run_state.json")
     st.info(
-        f"Ignored stale active run for completed topic . {stale_state.get('topic_id')} . "
-        "Start Next Lesson will use repaired Supabase progress."
+        f"Ignored stale active run . {stale_state.get('topic_id')} . "
+        f"V2.2 active target is {active_policy_topic_id or 'the repaired next topic'}."
     )
+
+if awaiting_run is None and active_policy_topic_id:
+    st.caption(f"V2.2 active target: {active_policy_topic_id}")
 
 action_c1, action_c2 = st.columns([1, 1])
 

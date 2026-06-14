@@ -555,6 +555,43 @@ def apply_practice_gate_to_evaluation(
     return evaluation
 
 
+def apply_v2_visible_score_gate(evaluation: EvaluationResult, topic_id: str) -> EvaluationResult:
+    """Make the visible 3-star contract the source of truth.
+
+    A lesson with any core score below 3 must remain revise.  A lesson with all
+    core scores >= 3 should not be blocked by hidden vocabulary preferences.
+    Capstone is additionally protected by progress policy, so a historical
+    capstone pass cannot unlock DL while ML repairs remain open.
+    """
+    minimum_score = min(_score_values(evaluation))
+    if minimum_score < 3:
+        evaluation.decision = "revise"
+        evaluation.next_action = "retry_same_topic"
+        gap = "V2.2 mastery gate: every core score must be >= 3 before this topic is treated as mastered."
+        if gap not in evaluation.weak_spots:
+            evaluation.weak_spots.append(gap)
+        return evaluation
+
+    if evaluation.decision in {"revise", "fail_prereq"}:
+        evaluation.decision = "borderline"
+        evaluation.next_action = "reinforce_and_continue"
+        note = "V2.2 visible-score override: all core scores are >= 3, so hidden evaluator wording cannot block mastery."
+        if note not in evaluation.strengths:
+            evaluation.strengths.append(note)
+    return evaluation
+
+
+def capstone_prerequisites_met_for_v2(topic_id: str) -> bool:
+    if topic_id != "capstone_ml_architect_001":
+        return True
+    try:
+        from src.utils.v2_learning_policy import all_ml_lessons_mastered, architect_checkpoint_mastered
+        rows = read_progress_rows()
+        return all_ml_lessons_mastered(rows) and architect_checkpoint_mastered(rows)
+    except Exception:
+        return False
+
+
 def unlock_dependent_topics(topic_catalog: List[Topic], completed_topic_id: str) -> List[str]:
     unlocked: List[str] = []
 
@@ -623,6 +660,14 @@ def main() -> None:
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
     evaluation = apply_practice_gate_to_evaluation(evaluation, practice_result)
     evaluation, language_noise = sanitize_evaluation_language_noise(evaluation, user_answers)
+    evaluation = apply_v2_visible_score_gate(evaluation, topic_id)
+
+    if not capstone_prerequisites_met_for_v2(topic_id):
+        evaluation.decision = "revise"
+        evaluation.next_action = "retry_same_topic"
+        capstone_lock = "V2.2 capstone lock: repair all ML lessons to core scores >= 3 before capstone can be mastered."
+        if capstone_lock not in evaluation.weak_spots:
+            evaluation.weak_spots.append(capstone_lock)
 
     answer_coaching = None
 

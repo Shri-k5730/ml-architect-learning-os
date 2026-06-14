@@ -291,6 +291,22 @@ def fetch_topic_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
         )
         rows = getattr(result, "data", None) or []
         payload = rows[0].get("learning_design") if rows else None
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+
+        # V2.1 SQL produced generic tutor designs for existing ML topics.
+        # Those rows override the stronger bundled hand-authored designs and make
+        # the lesson feel like filler. Reject only that generated version when a
+        # bundled design exists; DL/NN topics can still use Supabase designs.
+        design_version = str(payload.get("design_version") or "")
+        if design_version.startswith("mlos_v2_1_learning_reset") and not str(topic_id).startswith("dl_"):
+            try:
+                from src.blueprints.learning_design import get_bundled_learning_design
+                if get_bundled_learning_design(topic_id):
+                    return None
+            except Exception:
+                pass
+
+        return payload
     except Exception:
         return None
