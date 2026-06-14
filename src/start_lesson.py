@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -316,27 +316,63 @@ def _completed_topics_from_progress() -> set[str]:
     return completed
 
 
-def _is_stale_active_run(active_state: Dict[str, Any], completed_topics: set[str]) -> bool:
-    """A local awaiting run is stale if its topic is already completed durably.
+def _run_started_at_from_id(run_id: str) -> Optional[datetime]:
+    """Parse YYYYMMDD_HHMMSS from a run id when created_at is unavailable."""
+    try:
+        prefix = "_".join(str(run_id or "").split("_")[:2])
+        return datetime.strptime(prefix, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
 
-    Streamlit can keep local run folders across redeploy/runtime sessions. Patch
-    007 accidentally created a new awaiting run for mlf_001 after mlf_001 was
-    already completed. The UI learned to ignore that run, but src.start_lesson
-    still blocked because it checks local run_state.json first. This function
-    gives the CLI/subprocess the same protection as the UI.
+
+def _is_old_awaiting_run(active_state: Dict[str, Any], max_age_hours: int = 12) -> bool:
+    started_at = _run_started_at_from_id(str(active_state.get("run_id") or ""))
+    if started_at is None:
+        return False
+    return datetime.now(timezone.utc) - started_at > timedelta(hours=max_age_hours)
+
+
+def _is_stale_active_run(
+    active_state: Dict[str, Any],
+    completed_topics: set[str],
+    requested_topic_id: Optional[str] = None,
+) -> bool:
+    """Return True when an old awaiting run should not block a new lesson.
+
+    V2.3.3 fix:
+    - progression is controlled by best mastery, not latest stale local run;
+    - a mastered topic's old awaiting run is always stale, even if it was created
+      by a redo/retry path;
+    - when a repair topic is explicitly requested, an old awaiting run for a
+      different topic should be abandoned instead of blocking the repair queue.
+
+    This is the backend counterpart to the UI message: "Ignored stale active run".
+    Without this, the screen can correctly choose mlf_009 while src.start_lesson
+    still blocks on an old mlf_016 folder or Supabase row.
     """
     topic_id = str(active_state.get("topic_id") or "").strip()
     phase = str(active_state.get("phase") or "").strip()
     next_action = str(active_state.get("next_action") or "").strip()
+    requested = str(requested_topic_id or "").strip()
+
     if not topic_id:
         return False
-    if active_state.get("redo_mode") is True or str(active_state.get("selection_mode") or "") == "retry":
+    if phase != "awaiting_user_answers" or next_action != "await_user_answers":
         return False
-    return (
-        topic_id in completed_topics
-        and phase == "awaiting_user_answers"
-        and next_action == "await_user_answers"
-    )
+
+    # If durable progress already says this topic is mastered/completed, the
+    # active run is stale regardless of redo_mode/selection_mode. A later failed
+    # or abandoned redo must not block the repair queue.
+    if topic_id in completed_topics:
+        return True
+
+    # If the user deliberately clicked Repair/Redo for another topic and the
+    # existing awaiting run is old, treat it as stale. This protects Streamlit
+    # Cloud from month-old local run folders and Supabase-materialized runs.
+    if requested and requested != topic_id and _is_old_awaiting_run(active_state):
+        return True
+
+    return False
 
 
 def _abandon_stale_active_run(active_run: Path, active_state: Dict[str, Any]) -> None:
@@ -563,11 +599,13 @@ def persist_lesson_start_to_supabase(
     )
 
 def main() -> None:
+    requested_topic_id = resolve_requested_topic_id()
+
     active_run = find_active_awaiting_run()
     if active_run is not None:
         active_state = load_json(active_run / "run_state.json")
         completed_topics = _completed_topics_from_progress()
-        if _is_stale_active_run(active_state, completed_topics):
+        if _is_stale_active_run(active_state, completed_topics, requested_topic_id=requested_topic_id):
             _abandon_stale_active_run(active_run, active_state)
         else:
             raise StartLessonError(
@@ -577,8 +615,6 @@ def main() -> None:
 
     learner_profile = load_yaml(CONFIG_DIR / "learner_profile.yaml")
     topic_catalog = load_topic_catalog()
-
-    requested_topic_id = resolve_requested_topic_id()
     selected = select_topic(requested_topic_id=requested_topic_id)
     topic = get_topic_by_id(topic_catalog, selected.selected_topic_id)
     run_id = generate_run_id(topic.topic_id)

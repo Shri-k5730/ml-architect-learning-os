@@ -168,6 +168,26 @@ def _topic_status(progress_rows: List[Dict[str, str]], topic_id: str) -> str:
     return ""
 
 
+def _topic_is_mastered_or_completed(progress_rows: List[Dict[str, str]], topic_id: str) -> bool:
+    status = _topic_status(progress_rows, topic_id)
+    if status in {"completed", "mastered"}:
+        return True
+    for row in progress_rows or []:
+        if str(row.get("topic_id") or "") != topic_id:
+            continue
+        try:
+            scores = [
+                int(float(row.get("last_score_conceptual") or 0)),
+                int(float(row.get("last_score_practical") or 0)),
+                int(float(row.get("last_score_architect") or 0)),
+                int(float(row.get("last_score_communication") or 0)),
+            ]
+            return min(scores) >= 3
+        except Exception:
+            return False
+    return False
+
+
 def fetch_latest_run_rows_by_phase(phase: str, limit: int = 10) -> List[Dict[str, Any]]:
     if not supabase_enabled():
         return []
@@ -207,7 +227,10 @@ def sync_active_run_from_supabase(progress_rows: Optional[List[Dict[str, str]]] 
         status = str(row.get("status") or "").strip().lower()
         if status not in {"in_progress", "awaiting_user_answers", "started"}:
             continue
-        if progress_rows is not None and _topic_status(progress_rows, topic_id) == "completed" and not _is_redo_run(row):
+        # V2.3.3: do not re-materialize stale active runs for topics already
+        # mastered/completed. A historical redo/awaiting run must not hijack the
+        # repair queue after best mastery has been established.
+        if progress_rows is not None and _topic_is_mastered_or_completed(progress_rows, topic_id):
             continue
         return materialize_run_from_supabase(row)
     return None
