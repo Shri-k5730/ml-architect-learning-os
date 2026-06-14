@@ -1,0 +1,29 @@
+sequence_no,topic_id,title,item_type,status,last_decision,last_score_conceptual,last_score_practical,last_score_architect,last_score_communication,min_core_score,v2_mastery_status
+1,mlf_001,What machine learning is actually learning,lesson,not_started,revise,2,2,2,2,2,needs_attention
+2,mlf_002,Features vs labels,lesson,locked,borderline,3,3,2,3,2,needs_attention
+3,mlf_003,Training data vs test data,lesson,locked,borderline,3,3,3,3,3,mastered
+4,mlf_004,What a baseline really is,lesson,locked,borderline,3,3,2,3,2,needs_attention
+5,mlf_005,Generalization,lesson,locked,borderline,3,3,3,3,3,mastered
+6,mlf_006,Overfitting vs underfitting,lesson,locked,borderline,3,3,3,3,3,mastered
+7,mlf_007,Data leakage,lesson,locked,borderline,3,2,3,3,2,needs_attention
+8,mlf_008,Bias vs variance,lesson,locked,borderline,3,2,3,3,2,needs_attention
+9,mlf_009,Why accuracy can lie,lesson,locked,borderline,3,2,2,3,2,needs_attention
+10,mlf_010,Precision vs recall,lesson,locked,borderline,2,2,3,3,2,needs_attention
+11,checkpoint_ml_foundations_001,Checkpoint 1: ML Foundations Review,checkpoint,locked,borderline,2,3,2,2,2,needs_attention
+12,mlf_011,Model selection and validation strategy,lesson,locked,borderline,3,2,3,3,2,needs_attention
+13,mlf_012,Feature engineering and feature contracts,lesson,locked,borderline,3,2,2,2,2,needs_attention
+14,mlf_013,Encoding categorical variables safely,lesson,locked,borderline,3,2,3,3,2,needs_attention
+15,mlf_014,"Scaling, normalization, and pipeline leakage",lesson,locked,borderline,2,2,3,3,2,needs_attention
+16,mlf_015,Regularization: controlling model complexity,lesson,locked,borderline,3,2,3,3,2,needs_attention
+17,mlf_016,Threshold tuning and cost-sensitive decisions,lesson,locked,borderline,3,3,2,3,2,needs_attention
+18,mlf_017,Class imbalance handling strategies,lesson,locked,borderline,3,3,3,3,3,mastered
+19,mlf_018,Error analysis and model debugging,lesson,locked,pass,4,4,4,4,4,mastered
+20,mlf_019,Model interpretability and explainability limits,lesson,locked,borderline,3,3,3,3,3,mastered
+21,mlf_020,"ML monitoring: drift, performance, and retraining triggers",lesson,locked,borderline,3,3,3,3,3,mastered
+22,mlf_021,"Validation under time, group, and leakage constraints",lesson,locked,borderline,3,3,2,3,2,needs_attention
+23,mlf_022,Hyperparameter tuning without fooling yourself,lesson,locked,borderline,3,2,2,2,2,needs_attention
+24,mlf_023,"ROC, PR curves, and operating points",lesson,locked,borderline,3,3,2,2,2,needs_attention
+25,mlf_024,Probability calibration and confidence,lesson,locked,borderline,3,3,2,3,2,needs_attention
+26,mlf_025,"Data quality, label quality, and sampling bias",lesson,locked,borderline,3,2,2,3,2,needs_attention
+27,checkpoint_ml_architect_001,Checkpoint 2: ML Architect Readiness Review,checkpoint,locked,pass,4,4,4,4,4,mastered
+28,capstone_ml_architect_001,Capstone: Predictive Quality ML Architecture,capstone,locked,borderline,4,3,3,3,3,mastered
