@@ -1656,15 +1656,26 @@ def render_learning_design_panel(topic_id: str) -> bool:
     more_examples = design.get("worked_examples", []) or []
     if more_examples:
         st.markdown("#### Work through it")
+        st.caption("These are concept walkthroughs and example answers. They are not generic answer templates.")
         for example_idx, extra in enumerate(more_examples, start=1):
-            title = extra.get('title') or extra.get('label') or 'Reasoning steps'
+            title = extra.get('title') or extra.get('label') or 'Worked example'
             with st.expander(f"Worked example {example_idx}: {title}", expanded=example_idx == 1):
+                if extra.get("scenario"):
+                    render_static_card("Scenario", extra.get("scenario"), "callout-good")
+                if extra.get("body"):
+                    st.write(extra.get("body"))
+                rows = extra.get("rows", []) or []
+                if rows:
+                    st.dataframe(rows, use_container_width=True, hide_index=True)
+                if extra.get("calculation"):
+                    render_static_card("Calculation", extra.get("calculation"), "callout-good")
+                if extra.get("interpretation"):
+                    render_static_card("Interpretation", extra.get("interpretation"), "callout-good")
                 steps = extra.get("steps", []) or []
                 if steps:
+                    # Legacy fallback only. V2.4 authored tutor lessons should use body/rows/calculation.
                     for step_idx, step in enumerate(steps, start=1):
                         st.markdown(f"**{step_idx}.** {step}")
-                elif extra.get("body"):
-                    st.write(extra.get("body"))
 
     code_bridge = design.get("code_bridge", {}) or {}
     if code_bridge:
