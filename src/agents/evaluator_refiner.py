@@ -35,6 +35,7 @@ def build_evaluator_refiner_payload(
     practice_exercise: Dict[str, Any] | None = None,
     practice_submission: Dict[str, Any] | None = None,
     practice_result: Dict[str, Any] | None = None,
+    mcq_result: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     payload = {
         "topic_id": concept_note.topic_id,
@@ -100,6 +101,14 @@ def build_evaluator_refiner_payload(
         payload["practice_submission"] = practice_submission
     if practice_result is not None:
         payload["practice_result"] = practice_result
+    if mcq_result is not None:
+        payload["mcq_result"] = mcq_result
+        payload["evaluation_instruction"] = (
+            payload.get("evaluation_instruction", "")
+            + " V3 assessment contract: normal lessons are MCQ-first. The MCQ result tests breadth; "
+              "the written response tests concise reasoning. Do not expect five essays in normal lessons. "
+              "Do not penalize the learner for omitting separate essay responses that V3 deliberately removed."
+        ).strip()
     return payload
 
 

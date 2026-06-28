@@ -32,6 +32,13 @@ from src.utils.supabase_store import append_event, upsert_artifact, get_supabase
 from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
 from src.utils.v23_mastery_policy import display_status as v23_display_status, needs_repair as v23_needs_repair, is_mastered as v23_is_mastered
 from src.utils.v23_tutor_quality import enhance_learning_design
+from src.utils.v3_assessment_policy import (
+    build_mcq_submission_payload,
+    explain_contract,
+    filter_written_answer_items,
+    normalize_mcq_items,
+    score_mcq_submission,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -525,6 +532,62 @@ def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def mcq_submission_path(awaiting_run: Path) -> Path:
+    return awaiting_run / "mcq_submission.json"
+
+
+def collect_mcq_selections_from_session(run_id: str, topic_id: str, mcqs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    selections: Dict[str, Any] = {}
+    for idx, item in enumerate(normalize_mcq_items(mcqs), start=1):
+        qid = str(item.get("id") or f"mcq_{idx:02d}")
+        key = f"{run_id}_{topic_id}_mcq_{idx}"
+        selections[qid] = st.session_state.get(key)
+    return selections
+
+
+def persist_mcq_submission(
+    *,
+    awaiting_run: Path,
+    run_state: Dict[str, Any],
+    topic_id: str,
+    mcqs: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = build_mcq_submission_payload(
+        topic_id=topic_id,
+        run_id=run_state["run_id"],
+        mcqs=mcqs,
+        selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
+    )
+    save_answers(mcq_submission_path(awaiting_run), payload)
+    try:
+        upsert_artifact(
+            run_id=run_state["run_id"],
+            artifact_type="mcq_submission",
+            topic_id=topic_id,
+            payload=payload,
+        )
+        append_event(
+            event_type="mcq_submission_saved",
+            run_id=run_state["run_id"],
+            topic_id=topic_id,
+            payload=payload.get("result", {}),
+        )
+    except Exception:
+        pass
+    return payload
+
+
+def load_mcq_submission(awaiting_run: Path) -> Optional[Dict[str, Any]]:
+    path = mcq_submission_path(awaiting_run)
+    if not path.exists():
+        return None
+    try:
+        data = load_json(path)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 # -----------------------------
@@ -1539,7 +1602,7 @@ def render_topic_hero(run_state: Dict[str, Any], concept_note: Dict[str, Any], m
             <div class="workflow-strip">
                 <span class="workflow-step">1 Learn</span>
                 <span class="workflow-step">2 Check It</span>
-                <span class="workflow-step">3 MCQs</span>
+                <span class="workflow-step">3 Scored MCQs</span>
                 <span class="workflow-step">4 Evidence + Verify</span>
                 <span class="workflow-step">5 Code Lab</span>
                 <span class="workflow-step">6 Submit</span>
@@ -1869,26 +1932,44 @@ def _format_mcq_title(kind: str, idx: int, question: str) -> str:
     return f"{prefix}. {question}"
 
 
-def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
-    mcqs = booster.get("mcqs", []) or []
-    st.markdown("### Pre-mission MCQs")
-    st.caption("Learning checks only. They do not affect score, XP, or unlocks. These should test judgment, not memory alone.")
+def render_pre_mission_mcqs(
+    topic_id: str,
+    booster: Dict[str, Any],
+    awaiting_run: Optional[Path] = None,
+    run_state: Optional[Dict[str, Any]] = None,
+) -> None:
+    mcqs = normalize_mcq_items(booster.get("mcqs", []) or [])
+    contract = explain_contract(topic_id)
+
+    st.markdown("### Scored MCQs")
+    st.caption(contract.get("summary", "MCQs test breadth before the short written response."))
+
     if not mcqs:
         st.info("No MCQs configured for this lesson yet.")
         return
 
+    previous = load_mcq_submission(awaiting_run) if awaiting_run is not None else None
+    previous_selections = (previous or {}).get("selections", {}) if isinstance(previous, dict) else {}
+
     for idx, item in enumerate(mcqs, start=1):
-        qkey = f"{topic_id}_mcq_{idx}"
+        qid = str(item.get("id") or f"mcq_{idx:02d}")
+        qkey = f"{(run_state or {}).get('run_id', 'active')}_{topic_id}_mcq_{idx}"
         kind = str(item.get("kind", "Check"))
         title = _format_mcq_title(kind, idx, str(item.get("question", "")))
         with st.expander(title, expanded=(idx == 1)):
             options = item.get("options", []) or []
-            if not options:
-                st.info("No options configured.")
-                continue
+            default_value = previous_selections.get(qid)
+            try:
+                default_index = int(default_value) if default_value is not None else 0
+                if default_index < 0 or default_index >= len(options):
+                    default_index = 0
+            except Exception:
+                default_index = 0
+
             selected = st.radio(
                 label=f"Select answer for check {idx}",
                 options=list(range(len(options))),
+                index=default_index,
                 format_func=lambda i, opts=options: opts[i],
                 key=qkey,
                 label_visibility="collapsed",
@@ -1905,6 +1986,38 @@ def render_pre_mission_mcqs(topic_id: str, booster: Dict[str, Any]) -> None:
                     else:
                         st.caption("This option misses the topic-specific mechanism. Re-read the tutor narrative and try again.")
                     st.caption("The correct option is intentionally not shown. Fix the reasoning, not the guess.")
+
+    st.divider()
+    st.markdown("#### Save MCQ evidence")
+    st.caption("These MCQs now count. Save them before final evaluation. Normal lessons require 10+ MCQs, 70%+, and critical checks passed.")
+
+    current_result = None
+    if run_state is not None:
+        current_payload = build_mcq_submission_payload(
+            topic_id=topic_id,
+            run_id=run_state["run_id"],
+            mcqs=mcqs,
+            selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
+        )
+        current_result = current_payload.get("result", {})
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Answered", f"{current_result.get('answered', 0)}/{current_result.get('total', 0)}")
+        c2.metric("MCQ Score", f"{current_result.get('score_pct', 0)}%")
+        c3.metric("Gate", "PASS" if current_result.get("passed") else "NOT YET")
+
+    if awaiting_run is not None and run_state is not None:
+        if st.button("Save MCQ Answers", use_container_width=True, type="primary"):
+            payload = persist_mcq_submission(
+                awaiting_run=awaiting_run,
+                run_state=run_state,
+                topic_id=topic_id,
+                mcqs=mcqs,
+            )
+            result = payload.get("result", {})
+            if result.get("passed"):
+                st.success(f"MCQ gate passed: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
+            else:
+                st.warning(f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
 
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
@@ -2218,7 +2331,7 @@ tabs = st.tabs(
 # -----------------------------
 with tabs[0]:
     st.subheader("Level Map")
-    st.caption("V2.3 flow: repair every ML topic below 3-star mastery, then checkpoint → capstone → DL/NN. Mastered topics support Review/Redo; weak topics show Repair.")
+    st.caption("V3 flow: onion AI architect path + ML repair queue. Normal lessons use scored MCQs plus one short written answer; checkpoints/capstone stay deeper.")
 
     if not progress_rows:
         st.warning("No progress tracker found.")
@@ -2291,7 +2404,7 @@ with tabs[1]:
         practice_submission = None
         updated_practice_submission = None
 
-        current_tabs = ["① Learn", "② Check It", "③ MCQs", "④ Evidence + Verify"]
+        current_tabs = ["① Learn", "② Check It", "③ Scored MCQs", "④ Evidence + Verify"]
         if practice_exercise is not None:
             current_tabs.append("⑤ Code Lab")
             submit_tab_label = "⑥ Submit"
@@ -2310,7 +2423,7 @@ with tabs[1]:
             render_booster_walkthrough(booster)
 
         with lesson_tabs[2]:
-            render_pre_mission_mcqs(topic_id, booster)
+            render_pre_mission_mcqs(topic_id, booster, awaiting_run=awaiting_run, run_state=run_state)
 
         updated_answers = {
             "topic_id": answers_doc["topic_id"],
@@ -2324,7 +2437,15 @@ with tabs[1]:
             render_mission_bridge(booster, assessment_doc)
             st.divider()
 
-            for i, item in enumerate(answers_doc["answers"], start=1):
+            visible_answer_items = filter_written_answer_items(topic_id, answers_doc.get("answers", []))
+            hidden_count = max(0, len(answers_doc.get("answers", [])) - len(visible_answer_items))
+            if hidden_count:
+                st.info(
+                    f"V3 evaluation uses {len(visible_answer_items)} short written response(s) for this lesson. "
+                    f"{hidden_count} old essay task(s) from the previous run template are hidden."
+                )
+
+            for i, item in enumerate(visible_answer_items, start=1):
                 task_meta = _runtime_task_meta(learning_design, item)
                 mission_type = (task_meta or {}).get("label") or item.get("type", "evidence").replace("_", " ").title()
                 st.markdown(
@@ -2465,6 +2586,15 @@ with tabs[1]:
             if st.button("Save + Evaluate", use_container_width=True):
                 save_answers(answer_path, updated_answers)
                 persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
+                try:
+                    persist_mcq_submission(
+                        awaiting_run=awaiting_run,
+                        run_state=run_state,
+                        topic_id=topic_id,
+                        mcqs=booster.get("mcqs", []) or [],
+                    )
+                except Exception as exc:
+                    st.warning(f"MCQ submission could not be saved before evaluation: {exc}")
                 if updated_practice_submission is not None and practice_submission_path is not None:
                     save_answers(practice_submission_path, updated_practice_submission)
                     persist_practice_submission_to_supabase(run_state, topic_id, updated_practice_submission)

@@ -424,6 +424,84 @@ def _enhance_tasks(design: Dict[str, Any]) -> List[Dict[str, Any]]:
     return enhanced
 
 
+def _normalize_v3_knowledge_checks(design: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Make existing MCQs usable as scored V3 checks."""
+    checks: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(design.get("knowledge_checks", []) or [], start=1):
+        if not isinstance(raw, dict):
+            continue
+        item = deepcopy(raw)
+        item["id"] = str(item.get("id") or item.get("question_id") or f"mcq_{idx:02d}")
+        item["kind"] = str(item.get("kind") or ("Critical" if idx <= 3 else "Scenario"))
+        item["is_critical"] = bool(item.get("is_critical", idx <= 3))
+        options = list(item.get("options") or [])
+        option_explanations = list(item.get("option_explanations") or [])
+        if len(option_explanations) < len(options):
+            option_explanations.extend(["Review the concept mechanism and the worked example." for _ in range(len(options) - len(option_explanations))])
+        item["option_explanations"] = option_explanations
+        checks.append(item)
+
+    # Older bundled lessons sometimes have fewer than 10 checks. Add concept-safe
+    # non-trick scenario checks rather than leaving the MCQ gate impossible.
+    title = _clean(design.get("title")) or "this topic"
+    objective = _clean(design.get("learning_objective")) or f"understand {title}"
+    misconception = _clean(design.get("misconception")) or "Treating the concept as vocabulary instead of a decision risk."
+    architect = _clean(design.get("architect_extension")) or "Connect the concept to evidence, owner, trigger, and action."
+
+    while len(checks) < 10:
+        idx = len(checks) + 1
+        if idx % 3 == 1:
+            question = f"What is the safest practical interpretation of {title}?"
+            options = [
+                objective,
+                "It guarantees the model is correct in production.",
+                "It only matters for UI design.",
+                "It removes the need for validation.",
+            ]
+            answer_index = 0
+            explanation = "The correct option states the concept mechanism and decision boundary."
+        elif idx % 3 == 2:
+            question = f"Which answer is unsafe for {title}?"
+            options = [
+                misconception,
+                "Validate against deployment-like evidence.",
+                "Name the owner of the operating decision.",
+                "Monitor the agreed production signal.",
+            ]
+            answer_index = 0
+            explanation = "The unsafe option is the common wrong mental model."
+        else:
+            question = f"What makes this architect-level rather than a definition?"
+            options = [
+                architect,
+                "Using more jargon.",
+                "Writing a longer essay.",
+                "Ignoring the production decision.",
+            ]
+            answer_index = 0
+            explanation = "Architecture fluency means converting the concept into operating evidence and control."
+
+        checks.append(
+            {
+                "id": f"mcq_{idx:02d}",
+                "kind": "Scenario",
+                "is_critical": idx <= 3,
+                "question": question,
+                "options": options,
+                "answer_index": answer_index,
+                "explanation": explanation,
+                "option_explanations": [
+                    explanation,
+                    "This is overclaiming. The concept does not remove production evidence.",
+                    "This distracts from ML behavior.",
+                    "This removes the evidence/control boundary the lesson is teaching.",
+                ],
+            }
+        )
+
+    return checks[:10]
+
+
 def enhance_learning_design(learning_design: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not isinstance(learning_design, dict) or not learning_design:
         return learning_design
@@ -439,6 +517,8 @@ def enhance_learning_design(learning_design: Optional[Dict[str, Any]]) -> Option
     design["concept_steps"] = _build_expanded_steps(design)
     design["worked_examples"] = _build_worked_examples(design)
     design["evidence_tasks"] = _enhance_tasks(design)
+    design["knowledge_checks"] = _normalize_v3_knowledge_checks(design)
+    design["assessment_mode"] = "v3_mcq_first_plus_short_response"
     design["assessment_principle"] = (
         "Score only against what this lesson visibly teaches. A 3-star answer can be concise if it gives the mechanism, "
         "one concrete example or evidence point, and the decision consequence. Penalize technical falsehoods and copied scaffolds. "
@@ -455,7 +535,7 @@ def enhance_learning_design(learning_design: Optional[Dict[str, Any]]) -> Option
         "Can I state what goes wrong in production if this is ignored?",
         "Can I name the action or owner without writing a generic governance essay?",
     ]
-    design["tutor_quality_level"] = "v2_4_final"
+    design["tutor_quality_level"] = "v3_mcq_first_tutor"
     return design
 
 

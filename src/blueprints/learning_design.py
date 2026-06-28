@@ -10,6 +10,8 @@ Bundled content exists only so the app remains usable before/if a Supabase row i
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
+from src.utils.v3_assessment_policy import filter_assessment_questions
+
 from src.schemas import ArchitectNote, Assessment, AssessmentQuestion, ConceptNote, UseCaseMapping
 
 VERSION = "mastery_repair_tutor_depth_v2"
@@ -592,15 +594,22 @@ def design_to_architect_note(learning_design: Dict[str, Any]) -> ArchitectNote:
 
 
 def design_to_assessment(learning_design: Dict[str, Any]) -> Assessment:
+    """Build the visible written assessment under the V3 contract.
+
+    Normal lessons are MCQ-first and require one focused written response.
+    Checkpoints stay mixed, and capstone stays case-study heavy.
+    """
+    topic_id = str(learning_design["topic_id"])
+    tasks = filter_assessment_questions(topic_id, learning_design.get("evidence_tasks", []))
     return Assessment(
-        topic_id=learning_design["topic_id"],
+        topic_id=topic_id,
         questions=[
             AssessmentQuestion(
                 question_id=item["question_id"],
                 type=item["type"],
                 question=item["question"],
                 expected_focus=list(item.get("expected_focus", [])),
-            ) for item in learning_design.get("evidence_tasks", [])
+            ) for item in tasks
         ],
     )
 

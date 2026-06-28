@@ -33,6 +33,13 @@ from src.utils.tracker import get_progress_row, read_progress_rows, unlock_topic
 from src.utils.v23_mastery_policy import is_mastered as v23_is_mastered
 from src.utils.cloud_run_cache import sync_active_run_from_supabase
 from src.utils.validator import build_dataclass
+from src.utils.v3_assessment_policy import (
+    apply_mcq_gate_to_evaluation,
+    filter_assessment_questions,
+    score_mcq_submission,
+)
+from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
+from src.utils.supabase_store import fetch_topic_learning_design
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +65,7 @@ def persist_evaluation_to_supabase(
     practice_coaching: Dict[str, Any] | None = None,
     language_noise: List[Dict[str, Any]] | None = None,
     capstone_deliverables: Dict[str, Any] | None = None,
+    mcq_submission: Dict[str, Any] | None = None,
 ) -> None:
     upsert_run(
         run_id=run_id,
@@ -139,6 +147,14 @@ def persist_evaluation_to_supabase(
             artifact_type="capstone_deliverables",
             topic_id=topic_id,
             payload=capstone_deliverables,
+        )
+
+    if mcq_submission is not None:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="mcq_submission",
+            topic_id=topic_id,
+            payload=mcq_submission,
         )
 
     upsert_state(
@@ -280,6 +296,34 @@ def load_optional_json(relative_path: str | None) -> Dict[str, Any] | None:
         return None
     data = load_json(path)
     return data if isinstance(data, dict) else None
+
+
+def load_mcq_submission(run_dir: Path, topic_id: str) -> Dict[str, Any] | None:
+    """Load and rescore a saved V3 MCQ submission.
+
+    The UI persists selections to runs/<run_id>/mcq_submission.json. Evaluation
+    rescoring here makes the gate deterministic and independent of UI state.
+    """
+    path = run_dir / "mcq_submission.json"
+    if not path.exists():
+        return None
+    try:
+        payload = load_json(path)
+        if not isinstance(payload, dict):
+            return None
+        learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+        mcqs = (learning_design or {}).get("knowledge_checks", []) or []
+        selections = payload.get("selections", {}) or {}
+        payload["result"] = score_mcq_submission(topic_id=topic_id, mcqs=mcqs, selections=selections)
+        write_json(f"runs/{run_dir.name}/mcq_submission.json", payload)
+        return payload
+    except Exception:
+        return None
+
+
+def filter_assessment_for_v3(topic_id: str, assessment: Assessment) -> Assessment:
+    questions = filter_assessment_questions(topic_id, assessment.questions)
+    return Assessment(topic_id=assessment.topic_id, questions=questions)
 
 
 def run_practice_if_present(run_state: Dict[str, Any], run_id: str) -> tuple[Dict[str, Any] | None, Dict[str, Any] | None, Dict[str, Any] | None]:
@@ -599,11 +643,14 @@ def main() -> None:
     concept_note = build_dataclass(load_json(run_dir / "concept_note.json"), ConceptNote)
     architect_note = build_dataclass(load_json(run_dir / "architect_note.json"), ArchitectNote)
     assessment = build_dataclass(load_json(run_dir / "assessment.json"), Assessment)
+    assessment = filter_assessment_for_v3(topic_id, assessment)
 
     answers_relative_path = run_state["artifacts"]["answers"]
     answer_json_path = PROJECT_ROOT / answers_relative_path
     user_answers = load_user_answers(answer_json_path)
     practice_exercise, practice_submission, practice_result = run_practice_if_present(run_state, run_id)
+    mcq_submission = load_mcq_submission(run_dir, topic_id)
+    mcq_result = (mcq_submission or {}).get("result") if isinstance(mcq_submission, dict) else None
     practice_coaching = None
     if practice_exercise is not None and practice_result is not None:
         practice_coaching = build_practice_coaching(practice_exercise, practice_result)
@@ -620,8 +667,10 @@ def main() -> None:
         practice_exercise=practice_exercise,
         practice_submission=practice_submission,
         practice_result=practice_result,
+        mcq_result=mcq_result,
     )
     evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
+    evaluation = apply_mcq_gate_to_evaluation(evaluation, mcq_result, topic_id)
     evaluation = apply_practice_gate_to_evaluation(evaluation, practice_result)
     evaluation, language_noise = sanitize_evaluation_language_noise(evaluation, user_answers)
 
@@ -779,6 +828,7 @@ topic_id: {topic_id}
             "practice_submission": run_state.get("artifacts", {}).get("practice_submission"),
             "practice_result": f"runs/{run_id}/practice_result.json" if practice_result is not None else None,
             "practice_coaching": f"runs/{run_id}/practice_coaching.json" if practice_coaching is not None else None,
+            "mcq_submission": f"runs/{run_id}/mcq_submission.json" if mcq_submission is not None else None,
             "capstone_deliverables": f"runs/{run_id}/capstone_deliverables.json" if capstone_deliverables is not None else None,
         },
         "scores": {
@@ -807,6 +857,7 @@ topic_id: {topic_id}
             practice_coaching=practice_coaching,
             language_noise=language_noise,
             capstone_deliverables=capstone_deliverables,
+            mcq_submission=mcq_submission,
         )
         write_log(run_id, "Supabase persistence completed for evaluation.")
     except Exception as exc:
@@ -826,6 +877,7 @@ topic_id: {topic_id}
             "unlocked_topics": unlocked_topics,
             "reward_summary": rewards_summary,
             "progression_completed": completed,
+            "mcq_summary": mcq_result or {},
         },
     )
 

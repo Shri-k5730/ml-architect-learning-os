@@ -160,9 +160,19 @@ def _choose_best_progress_rows(
     state_completed = _completed_count(state_rows)
 
     if state_completed > table_completed:
+        # A bigger completed count usually means the repaired state is ahead,
+        # but never drop newly-added V3 curriculum rows if the table contains
+        # more topics than the state snapshot.
+        if len(table_rows) > len(state_rows):
+            return table_rows
         return state_rows
     if table_completed > state_completed:
         return table_rows
+
+    # V3 tie-breaker: prefer the source with more catalog rows so newly-added
+    # onion topics do not disappear behind an older progress_tracker snapshot.
+    if len(table_rows) != len(state_rows):
+        return table_rows if len(table_rows) > len(state_rows) else state_rows
 
     # Tie-breaker: prefer the source with an unlocked incomplete item. If only
     # one source has a playable next item, use that one. Otherwise use table.
@@ -282,7 +292,7 @@ def _apply_v23_best_mastery(rows: list[Dict[str, str]]) -> list[Dict[str, str]]:
 
 
 def _apply_v23_repair_unlocks(rows: list[Dict[str, str]]) -> list[Dict[str, str]]:
-    """Unlock repair queue while keeping checkpoints/capstone/DL gated.
+    """Unlock repair queue and V3 onion path while keeping checkpoints/capstone/DL gated.
 
     The learner is in mastery-repair mode. Blocking every later ML repair item
     behind the first weak lesson creates the false impression that only one item
@@ -333,6 +343,32 @@ def _apply_v23_repair_unlocks(rows: list[Dict[str, str]]) -> list[Dict[str, str]
             row["prerequisites_unlocked"] = "true" if (all_ml_mastered and checkpoint_arch_mastered) else "false"
             if row["prerequisites_unlocked"] == "false" and row.get("status") != "completed":
                 row["status"] = "locked"
+            continue
+
+        if topic_id.startswith(("aia_", "genai_", "rag_", "llm_", "trf_")):
+            # V3 onion path is an architect-first track. It is allowed to start
+            # immediately and then follows its own prerequisite chain. It is not
+            # blocked by unfinished ML repair topics.
+            prereqs = []
+            try:
+                catalog = load_topic_catalog_dicts(prefer_supabase=True)
+                topic_meta = next((t for t in catalog if t.get("topic_id") == topic_id), {})
+                prereqs = list(topic_meta.get("prerequisites") or [])
+            except Exception:
+                prereqs = []
+
+            if not prereqs:
+                row["prerequisites_unlocked"] = "true"
+                if status in {"locked", ""}:
+                    row["status"] = "unlocked"
+            else:
+                prereq_rows = [r for r in rows if r.get("topic_id") in prereqs]
+                prereq_done = bool(prereq_rows) and all(mastered(r) for r in prereq_rows)
+                row["prerequisites_unlocked"] = "true" if prereq_done else "false"
+                if not prereq_done and row.get("status") != "completed":
+                    row["status"] = "locked"
+                elif prereq_done and status in {"locked", ""}:
+                    row["status"] = "unlocked"
             continue
 
         if topic_id.startswith("dl_"):
