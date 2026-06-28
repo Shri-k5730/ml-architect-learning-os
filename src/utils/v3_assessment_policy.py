@@ -14,7 +14,7 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, List, Optional
 
 
-NORMAL_MCQ_MIN_ITEMS = 10
+NORMAL_MCQ_TARGET_ITEMS = 10
 NORMAL_MCQ_PASS_PCT = 70.0
 NORMAL_WRITTEN_TASKS = 1
 CHECKPOINT_WRITTEN_TASKS = 2
@@ -169,7 +169,18 @@ def score_mcq_submission(
 
     pct = round((correct / total) * 100, 2) if total else 0.0
     min_pct = NORMAL_MCQ_PASS_PCT if is_normal_lesson_topic(topic_id) else 75.0
-    has_enough_items = total >= NORMAL_MCQ_MIN_ITEMS if is_normal_lesson_topic(topic_id) else total > 0
+    # V3.2 Option B: score against the MCQs actually rendered for this run.
+    # The curriculum target remains 10+ MCQs, but early/legacy runs may only
+    # contain 1-9 items. A learner must answer every available item, meet the
+    # percentage threshold, and clear critical checks. Do not convert 1/1 into
+    # 1/10.
+    if is_normal_lesson_topic(topic_id):
+        has_enough_items = total > 0
+        required_items = total
+    else:
+        has_enough_items = total > 0
+        required_items = total
+
     passed = has_enough_items and answered == total and pct >= min_pct and not critical_failed
 
     return {
@@ -179,12 +190,13 @@ def score_mcq_submission(
         "correct": correct,
         "score_pct": pct,
         "minimum_pct": min_pct,
-        "minimum_items": NORMAL_MCQ_MIN_ITEMS if is_normal_lesson_topic(topic_id) else 1,
+        "minimum_items": required_items,
+        "target_items": NORMAL_MCQ_TARGET_ITEMS if is_normal_lesson_topic(topic_id) else None,
         "has_enough_items": has_enough_items,
         "critical_failed": critical_failed,
         "wrong": wrong,
         "passed": passed,
-        "policy": "Normal lessons require 10+ scored MCQs, >=70%, all critical MCQs correct, plus one short written answer.",
+        "policy": "Normal lessons score all available MCQs for the run, target 10+, require >=70%, all critical checks correct, plus one short written answer.",
     }
 
 
@@ -209,7 +221,8 @@ def explain_contract(tid: str) -> Dict[str, Any]:
         "mode": "normal_mcq_first",
         "mcq_required": True,
         "mcq_minimum_pct": NORMAL_MCQ_PASS_PCT,
-        "mcq_minimum_items": NORMAL_MCQ_MIN_ITEMS,
+        "mcq_minimum_items": "available",
+        "mcq_target_items": NORMAL_MCQ_TARGET_ITEMS,
         "written_tasks": NORMAL_WRITTEN_TASKS,
         "summary": "Normal lessons use MCQs for breadth and one short written answer for reasoning.",
     }

@@ -35,9 +35,11 @@ from src.utils.v23_tutor_quality import enhance_learning_design
 from src.utils.v3_assessment_policy import (
     build_mcq_submission_payload,
     explain_contract,
+    filter_assessment_questions,
     filter_written_answer_items,
     normalize_mcq_items,
     score_mcq_submission,
+    written_task_limit,
 )
 
 
@@ -960,6 +962,47 @@ def _runtime_task_meta(learning_design: Optional[Dict[str, Any]], item: Dict[str
         str(item.get("question_id", "")),
         str(item.get("question", "")),
     )
+
+
+def filter_assessment_doc_for_v3(topic_id: str, assessment_doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the assessment contract that should be visible/evaluated in V3.
+
+    Existing active runs can contain old 4-5 essay questions. V3 normal lessons
+    deliberately expose only one short written response. The same filtered
+    contract must be used by the bridge, draft guardrail, and evaluator.
+    """
+    doc = dict(assessment_doc or {})
+    doc["questions"] = filter_assessment_questions(topic_id, doc.get("questions", []) or [])
+    return doc
+
+
+def trim_draft_verification_for_v3(topic_id: str, verification: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Hide stale guardrail findings for old essay tasks no longer visible in V3."""
+    if not verification:
+        return verification
+    items = list(verification.get("items", []) or [])
+    limit = written_task_limit(topic_id)
+    if len(items) <= limit:
+        return verification
+
+    trimmed = dict(verification)
+    visible_items = items[:limit]
+    trimmed["items"] = visible_items
+    summary = dict(trimmed.get("summary", {}) or {})
+    weak_count = sum(
+        1
+        for item in visible_items
+        if (item.get("misconceptions") or item.get("coverage_gaps"))
+    )
+    summary["weak_count"] = weak_count
+    summary["responses_checked"] = len(visible_items)
+    summary["v3_hidden_old_tasks"] = len(items) - len(visible_items)
+    if weak_count:
+        summary["recommendation"] = "Fix the visible V3 written response before submitting."
+    else:
+        summary["recommendation"] = "Visible V3 written response has no blocking issue. Old hidden essay tasks are ignored."
+    trimmed["summary"] = summary
+    return trimmed
 
 
 def render_answer_pressure(question_type: str, answer_text: str, task_meta: Optional[Dict[str, Any]] = None) -> None:
@@ -1892,12 +1935,14 @@ def run_draft_verification_action(
 ) -> None:
     save_answers(answer_path, updated_answers)
     persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
+    effective_assessment_doc = filter_assessment_doc_for_v3(topic_id, assessment_doc)
     verification = verify_draft_answers(
         concept_note=build_dataclass(concept_note, ConceptNote),
         architect_note=build_dataclass(architect_note, ArchitectNote),
-        assessment=build_dataclass(assessment_doc, Assessment),
+        assessment=build_dataclass(effective_assessment_doc, Assessment),
         answers_doc=updated_answers,
     )
+    verification = trim_draft_verification_for_v3(topic_id, verification)
     save_answers(awaiting_run / "draft_verification.json", verification)
     try:
         upsert_artifact(
@@ -1918,11 +1963,11 @@ def run_draft_verification_action(
     st.session_state["draft_verification"] = verification
 
 
-def get_draft_verification_to_show(awaiting_run: Path, run_id: str) -> Optional[Dict[str, Any]]:
+def get_draft_verification_to_show(awaiting_run: Path, run_id: str, topic_id: str = "") -> Optional[Dict[str, Any]]:
     if st.session_state.get("draft_verification_run_id") == run_id:
-        return st.session_state.get("draft_verification")
+        return trim_draft_verification_for_v3(topic_id, st.session_state.get("draft_verification"))
     if (awaiting_run / "draft_verification.json").exists():
-        return load_json(awaiting_run / "draft_verification.json")
+        return trim_draft_verification_for_v3(topic_id, load_json(awaiting_run / "draft_verification.json"))
     return None
 
 
@@ -1989,7 +2034,7 @@ def render_pre_mission_mcqs(
 
     st.divider()
     st.markdown("#### Save MCQ evidence")
-    st.caption("These MCQs now count. Save them before final evaluation. Normal lessons require 10+ MCQs, 70%+, and critical checks passed.")
+    st.caption("These MCQs now count. Save them before final evaluation. V3.2 scores the MCQs available in this run, target 10+, 70%+, and critical checks passed.")
 
     current_result = None
     if run_state is not None:
@@ -2018,6 +2063,8 @@ def render_pre_mission_mcqs(
                 st.success(f"MCQ gate passed: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
             else:
                 st.warning(f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
+                if result.get("total", 0) > 0 and not result.get("critical_failed") and result.get("score_pct", 0) >= 70:
+                    st.caption("If this still fails, refresh the page and evaluate again. V3.2 uses available MCQs, not a hardcoded 10-item denominator.")
 
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
@@ -2388,15 +2435,17 @@ with tabs[1]:
         concept_note = load_json(awaiting_run / "concept_note.json")
         architect_note = load_json(awaiting_run / "architect_note.json")
         assessment_doc = load_json(awaiting_run / "assessment.json")
+        visible_assessment_doc = filter_assessment_doc_for_v3(topic_id, assessment_doc)
 
         answer_path = PROJECT_ROOT / run_state["artifacts"]["answers"]
         answers_doc = load_json(answer_path)
 
-        mission_types = sorted({item["type"] for item in answers_doc["answers"]})
+        visible_answer_items_for_header = filter_written_answer_items(topic_id, answers_doc.get("answers", []))
+        mission_types = sorted({item.get("type", "evidence") for item in visible_answer_items_for_header})
         render_topic_hero(run_state, concept_note, mission_types)
 
         learning_design = load_topic_learning_design(topic_id)
-        booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
+        booster = build_lesson_booster(topic_id, concept_note, architect_note, visible_assessment_doc)
 
         artifacts = run_state.get("artifacts", {}) or {}
         practice_exercise = load_relative_json_or_none(artifacts.get("practice_exercise"))
@@ -2434,7 +2483,7 @@ with tabs[1]:
         with lesson_tabs[3]:
             st.markdown("### Evidence Responses")
             st.caption("Answer only what each task asks. Normal lessons use different evidence tasks, not a repeated essay formula.")
-            render_mission_bridge(booster, assessment_doc)
+            render_mission_bridge(booster, visible_assessment_doc)
             st.divider()
 
             visible_answer_items = filter_written_answer_items(topic_id, answers_doc.get("answers", []))
@@ -2495,7 +2544,7 @@ with tabs[1]:
                             topic_id=topic_id,
                             concept_note=concept_note,
                             architect_note=architect_note,
-                            assessment_doc=assessment_doc,
+                            assessment_doc=visible_assessment_doc,
                             answer_path=answer_path,
                             updated_answers=updated_answers,
                         )
@@ -2503,7 +2552,7 @@ with tabs[1]:
                     except Exception as exc:
                         st.error(f"Draft verification failed: {exc}")
 
-            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"])
+            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"], topic_id)
             if verification_to_show:
                 st.divider()
                 render_draft_verification_panel(verification_to_show)
@@ -2606,7 +2655,7 @@ with tabs[1]:
                     st.session_state.pop("draft_verification_run_id", None)
                     st.rerun()
 
-            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"])
+            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"], topic_id)
             if verification_to_show:
                 st.divider()
                 st.caption("Latest draft verification from Missions tab")
