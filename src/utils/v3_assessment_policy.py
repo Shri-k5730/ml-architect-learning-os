@@ -95,21 +95,52 @@ def _stable_mcq_option_order(seed_text: str, option_count: int, answer_index: in
 
 
 def normalize_mcq_items(mcqs: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return display-ready MCQ items exactly once.
+
+    V3.3 introduced deterministic option shuffling, but the app called
+    normalize_mcq_items() in multiple places: render, collect, persist and
+    score. The old implementation was not idempotent. A question could be
+    shuffled once for display and then shuffled again during scoring, so a
+    learner could visibly answer 10/10 correctly while the saved result scored
+    only 7/10 or showed the pass threshold as the score.
+
+    This function is now idempotent: once an MCQ carries v3_normalized=True,
+    the function validates and returns it without changing option order or the
+    answer index.
+    """
     items: List[Dict[str, Any]] = []
     for idx, raw in enumerate(mcqs or [], start=1):
         if not isinstance(raw, dict):
             continue
-        options = list(raw.get("options") or [])
+
+        item = deepcopy(raw)
+        options = list(item.get("options") or [])
         if not options:
             continue
+
+        # Already normalized by the render path. Do not shuffle again.
+        if item.get("v3_normalized") is True:
+            try:
+                answer_index = int(item.get("answer_index"))
+            except Exception:
+                continue
+            if answer_index < 0 or answer_index >= len(options):
+                continue
+            item_id = str(item.get("id") or item.get("question_id") or f"mcq_{idx:02d}")
+            item["id"] = item_id
+            item["kind"] = str(item.get("kind") or ("Critical" if idx <= 3 else "Scenario"))
+            item["is_critical"] = bool(item.get("is_critical", idx <= 3))
+            item["v3_normalized"] = True
+            items.append(item)
+            continue
+
         try:
-            answer_index = int(raw.get("answer_index"))
+            answer_index = int(item.get("answer_index"))
         except Exception:
             continue
         if answer_index < 0 or answer_index >= len(options):
             continue
 
-        item = deepcopy(raw)
         item_id = str(item.get("id") or item.get("question_id") or f"mcq_{idx:02d}")
         seed_text = f"{item_id}|{item.get('question', '')}"
         order = _stable_mcq_option_order(seed_text, len(options), answer_index)
@@ -128,6 +159,7 @@ def normalize_mcq_items(mcqs: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         item["id"] = item_id
         item["kind"] = str(item.get("kind") or ("Critical" if idx <= 3 else "Scenario"))
         item["is_critical"] = bool(item.get("is_critical", idx <= 3))
+        item["v3_normalized"] = True
         items.append(item)
     return items
 
@@ -234,7 +266,7 @@ def score_mcq_submission(
         "critical_failed": critical_failed,
         "wrong": wrong,
         "passed": passed,
-        "policy": "Normal lessons score all available MCQs for the run, target 10+, require >=70%, all critical checks correct, plus one short written answer.",
+        "policy": "V3.4: score against the MCQs actually displayed in this run. Normal lessons require every displayed MCQ answered, >=70%, all critical checks correct, plus one short written answer.",
     }
 
 

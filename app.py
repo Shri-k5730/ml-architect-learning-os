@@ -2035,7 +2035,7 @@ def render_pre_mission_mcqs(
 
     st.divider()
     st.markdown("#### Save MCQ evidence")
-    st.caption("These MCQs now count. Save them before final evaluation. V3.2 scores the MCQs available in this run, target 10+, 70%+, and critical checks passed.")
+    st.caption("These MCQs now count. Save them before final evaluation. V3.4 scores the exact MCQs displayed in this run. Answer all displayed MCQs, reach 70%+, and clear critical checks.")
 
     current_result = None
     if run_state is not None:
@@ -2065,7 +2065,7 @@ def render_pre_mission_mcqs(
             else:
                 st.warning(f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
                 if result.get("total", 0) > 0 and not result.get("critical_failed") and result.get("score_pct", 0) >= 70:
-                    st.caption("If this still fails, refresh the page and evaluate again. V3.2 uses available MCQs, not a hardcoded 10-item denominator.")
+                    st.caption("If this still fails, refresh the page and evaluate again. V3.4 prevents double-shuffling between display and scoring.")
 
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
