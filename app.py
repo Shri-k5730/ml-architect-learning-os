@@ -2004,29 +2004,30 @@ def render_pre_mission_mcqs(
         with st.expander(title, expanded=(idx == 1)):
             options = item.get("options", []) or []
             default_value = previous_selections.get(qid)
+            radio_values = [None] + list(range(len(options)))
             try:
-                default_index = int(default_value) if default_value is not None else 0
-                if default_index < 0 or default_index >= len(options):
-                    default_index = 0
+                default_index = radio_values.index(int(default_value)) if default_value is not None else 0
             except Exception:
                 default_index = 0
 
             selected = st.radio(
                 label=f"Select answer for check {idx}",
-                options=list(range(len(options))),
+                options=radio_values,
                 index=default_index,
-                format_func=lambda i, opts=options: opts[i],
+                format_func=lambda i, opts=options: "Select an answer..." if i is None else opts[i],
                 key=qkey,
                 label_visibility="collapsed",
             )
             correct_index = int(item.get("answer_index", -1))
             option_explanations = item.get("option_explanations", []) or []
             if st.button(f"Check answer {idx}", key=f"{qkey}_btn", use_container_width=True):
-                if selected == correct_index:
+                if selected is None:
+                    st.warning("Select an answer first.")
+                elif selected == correct_index:
                     st.success("Correct. " + str(item.get("explanation", "")))
                 else:
                     st.error("Not quite.")
-                    if selected < len(option_explanations) and option_explanations[selected]:
+                    if isinstance(selected, int) and selected < len(option_explanations) and option_explanations[selected]:
                         st.warning(str(option_explanations[selected]))
                     else:
                         st.caption("This option misses the topic-specific mechanism. Re-read the tutor narrative and try again.")
@@ -2187,6 +2188,97 @@ def render_level_card(
         """,
         unsafe_allow_html=True,
     )
+
+
+def v3_home_group_for_topic(topic_id: str) -> str:
+    tid = str(topic_id or "").strip()
+    if tid.startswith(("aia_", "genai_", "rag_", "llm_", "trf_")):
+        return "agentic"
+    if tid.startswith("mlf_") or tid.startswith("checkpoint_ml_") or tid.startswith("capstone_ml_"):
+        return "ml"
+    if tid.startswith("dl_"):
+        try:
+            number = int(tid.split("_", 1)[1])
+        except Exception:
+            number = 0
+        return "dl" if number and number <= 7 else "nn"
+    return "other"
+
+
+V3_HOME_GROUPS = [
+    (
+        "agentic",
+        "🤖 Agentic AI / GenAI Onion Path",
+        "Start from the outer system layer: agents, tool use, RAG, LLM limits and transformer intuition.",
+    ),
+    (
+        "ml",
+        "📊 Machine Learning Repair Queue",
+        "Repair only ML topics below 3-star mastery. Mastered topics remain reviewable but should not block progress.",
+    ),
+    (
+        "dl",
+        "🧠 Deep Learning Foundations",
+        "Neurons, activations, forward pass, losses, gradient descent, backprop and training loops.",
+    ),
+    (
+        "nn",
+        "🕸️ Neural Networks: Regularization and Deployment",
+        "Overfitting, dropout, batch normalization, early stopping and production risks.",
+    ),
+    ("other", "Other", "Additional curriculum items."),
+]
+
+
+def render_topic_action_buttons(row: Dict[str, str], awaiting_run: Optional[Path]) -> None:
+    topic_id = row.get("topic_id", "")
+    status = v23_display_status(row, rewards_state)
+    if status == "completed":
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button("Review", key=f"review_{topic_id}", use_container_width=True, disabled=not topic_id):
+                st.session_state.review_topic_id = topic_id
+                st.info("Open the Review / Redo tab to inspect this completed topic.")
+        with action_cols[1]:
+            redo_disabled = awaiting_run is not None
+            if st.button("Redo", key=f"redo_{topic_id}", use_container_width=True, disabled=redo_disabled):
+                with st.spinner(f"Starting redo attempt for {topic_id}..."):
+                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=True)
+                record_action_result("Start Redo Attempt", ok, output)
+                if ok:
+                    st.rerun()
+    else:
+        unlocked = str(row.get("prerequisites_unlocked") or "").strip().lower() == "true"
+        if status in {"needs_attention", "revise", "borderline", "unlocked", "not_started"} and unlocked:
+            button_label = "Repair" if status in {"needs_attention", "revise", "borderline"} else "Start"
+            if st.button(button_label, key=f"repair_{topic_id}", use_container_width=True, disabled=awaiting_run is not None):
+                with st.spinner(f"Starting {button_label.lower()} attempt for {topic_id}..."):
+                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=False)
+                record_action_result(f"Start {button_label} Attempt", ok, output)
+                if ok:
+                    st.rerun()
+        else:
+            st.caption("Locked until prerequisite mastery gate is met.")
+
+
+def render_grouped_level_map(progress_rows: List[Dict[str, str]], awaiting_run: Optional[Path]) -> None:
+    grouped: Dict[str, List[Dict[str, str]]] = {key: [] for key, _, _ in V3_HOME_GROUPS}
+    for row in progress_rows:
+        grouped.setdefault(v3_home_group_for_topic(row.get("topic_id", "")), []).append(row)
+
+    for key, title, caption in V3_HOME_GROUPS:
+        rows = grouped.get(key, [])
+        if not rows:
+            continue
+        with st.expander(title, expanded=(key in {"agentic", "ml"})):
+            st.caption(caption)
+            cols_per_row = 3
+            for i in range(0, len(rows), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for j, row in enumerate(rows[i:i + cols_per_row]):
+                    with cols[j]:
+                        render_level_card(row, st.session_state.selected_topic_id, rewards_state)
+                        render_topic_action_buttons(row, awaiting_run)
 
 
 def render_latest_evaluation_panel() -> None:
@@ -2383,40 +2475,7 @@ with tabs[0]:
     if not progress_rows:
         st.warning("No progress tracker found.")
     else:
-        cols_per_row = 3
-        for i in range(0, len(progress_rows), cols_per_row):
-            cols = st.columns(cols_per_row)
-            for j, row in enumerate(progress_rows[i:i + cols_per_row]):
-                with cols[j]:
-                    render_level_card(row, st.session_state.selected_topic_id, rewards_state)
-                    topic_id = row.get("topic_id", "")
-                    status = v23_display_status(row, rewards_state)
-                    if status == "completed":
-                        action_cols = st.columns(2)
-                        with action_cols[0]:
-                            if st.button("Review", key=f"review_{topic_id}", use_container_width=True, disabled=not topic_id):
-                                st.session_state.review_topic_id = topic_id
-                                st.info("Open the Review / Redo tab to inspect this completed topic.")
-                        with action_cols[1]:
-                            redo_disabled = awaiting_run is not None
-                            if st.button("Redo", key=f"redo_{topic_id}", use_container_width=True, disabled=redo_disabled):
-                                with st.spinner(f"Starting redo attempt for {topic_id}..."):
-                                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=True)
-                                record_action_result("Start Redo Attempt", ok, output)
-                                if ok:
-                                    st.rerun()
-                    else:
-                        unlocked = str(row.get("prerequisites_unlocked") or "").strip().lower() == "true"
-                        if status in {"needs_attention", "revise", "borderline", "unlocked", "not_started"} and unlocked:
-                            button_label = "Repair" if status in {"needs_attention", "revise", "borderline"} else "Start"
-                            if st.button(button_label, key=f"repair_{topic_id}", use_container_width=True, disabled=awaiting_run is not None):
-                                with st.spinner(f"Starting {button_label.lower()} attempt for {topic_id}..."):
-                                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=False)
-                                record_action_result(f"Start {button_label} Attempt", ok, output)
-                                if ok:
-                                    st.rerun()
-                        else:
-                            st.caption("Locked until prerequisite mastery gate is met.")
+        render_grouped_level_map(progress_rows, awaiting_run)
 
     st.divider()
     st.subheader("Latest Result")

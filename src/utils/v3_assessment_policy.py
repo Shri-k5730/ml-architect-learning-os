@@ -11,6 +11,8 @@ Normal lessons should not behave like five-essay exams.
 """
 
 from copy import deepcopy
+import hashlib
+import random
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -71,6 +73,27 @@ def filter_assessment_questions(tid: str, questions: Iterable[Any]) -> List[Any]
     return questions[: written_task_limit(tid)]
 
 
+def _stable_mcq_option_order(seed_text: str, option_count: int, answer_index: int) -> List[int]:
+    """Return a deterministic display order for MCQ options.
+
+    V3.2 exposed a bad anti-pattern: generated MCQs often had the correct
+    answer at option 0. Combined with Streamlit radio defaults, a learner could
+    appear to pass without making a choice. V3.3 fixes both problems: the UI
+    uses an explicit blank option, and this policy prevents answer-position
+    leakage by deterministically shuffling options per question.
+    """
+    order = list(range(option_count))
+    if option_count <= 1:
+        return order
+    seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    rng.shuffle(order)
+    # Avoid systematically leaving the correct answer first when the seed does so.
+    if order.index(answer_index) == 0:
+        order = order[1:] + order[:1]
+    return order
+
+
 def normalize_mcq_items(mcqs: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     for idx, raw in enumerate(mcqs or [], start=1):
@@ -85,11 +108,26 @@ def normalize_mcq_items(mcqs: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
             continue
         if answer_index < 0 or answer_index >= len(options):
             continue
+
         item = deepcopy(raw)
-        item["id"] = str(item.get("id") or item.get("question_id") or f"mcq_{idx:02d}")
+        item_id = str(item.get("id") or item.get("question_id") or f"mcq_{idx:02d}")
+        seed_text = f"{item_id}|{item.get('question', '')}"
+        order = _stable_mcq_option_order(seed_text, len(options), answer_index)
+
+        option_explanations = list(item.get("option_explanations") or [])
+        if len(option_explanations) == len(options):
+            item["option_explanations"] = [option_explanations[i] for i in order]
+        elif option_explanations:
+            # Drop malformed explanations rather than showing them against the wrong option.
+            item["option_explanations"] = []
+
+        item["options"] = [options[i] for i in order]
+        item["answer_index"] = order.index(answer_index)
+        item["original_answer_index"] = answer_index
+        item["option_order"] = order
+        item["id"] = item_id
         item["kind"] = str(item.get("kind") or ("Critical" if idx <= 3 else "Scenario"))
         item["is_critical"] = bool(item.get("is_critical", idx <= 3))
-        item["answer_index"] = answer_index
         items.append(item)
     return items
 
