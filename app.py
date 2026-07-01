@@ -542,10 +542,12 @@ def mcq_submission_path(awaiting_run: Path) -> Path:
 
 def collect_mcq_selections_from_session(run_id: str, topic_id: str, mcqs: List[Dict[str, Any]]) -> Dict[str, Any]:
     selections: Dict[str, Any] = {}
-    for idx, item in enumerate(normalize_mcq_items(mcqs), start=1):
+
+    for idx, item in enumerate(normalize_mcq_items(mcqs, seed_context=run_id), start=1):
         qid = str(item.get("id") or f"mcq_{idx:02d}")
         key = f"{run_id}_{topic_id}_mcq_{idx}"
         selections[qid] = st.session_state.get(key)
+
     return selections
 
 
@@ -557,11 +559,12 @@ def persist_mcq_submission(
     mcqs: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     payload = build_mcq_submission_payload(
-        topic_id=topic_id,
-        run_id=run_state["run_id"],
-        mcqs=mcqs,
-        selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
-    )
+    topic_id=topic_id,
+    run_id=run_state["run_id"],
+    mcqs=mcqs,
+    selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
+    seed_context=run_state["run_id"],
+)
     save_answers(mcq_submission_path(awaiting_run), payload)
     try:
         upsert_artifact(
@@ -1983,7 +1986,8 @@ def render_pre_mission_mcqs(
     awaiting_run: Optional[Path] = None,
     run_state: Optional[Dict[str, Any]] = None,
 ) -> None:
-    mcqs = normalize_mcq_items(booster.get("mcqs", []) or [])
+    seed_context = str((run_state or {}).get("run_id") or topic_id or "active")
+    mcqs = normalize_mcq_items(booster.get("mcqs", []) or [], seed_context=seed_context)
     contract = explain_contract(topic_id)
 
     st.markdown("### Scored MCQs")
@@ -1998,58 +2002,94 @@ def render_pre_mission_mcqs(
 
     for idx, item in enumerate(mcqs, start=1):
         qid = str(item.get("id") or f"mcq_{idx:02d}")
-        qkey = f"{(run_state or {}).get('run_id', 'active')}_{topic_id}_mcq_{idx}"
+        qkey = f"{seed_context}_{topic_id}_mcq_{idx}"
         kind = str(item.get("kind", "Check"))
         title = _format_mcq_title(kind, idx, str(item.get("question", "")))
+
         with st.expander(title, expanded=(idx == 1)):
             options = item.get("options", []) or []
+            option_ids = item.get("option_ids", []) or [f"opt_{i}" for i in range(len(options))]
+            option_text_by_id = {
+                oid: options[i]
+                for i, oid in enumerate(option_ids)
+                if i < len(options)
+            }
+
             default_value = previous_selections.get(qid)
-            radio_values = [None] + list(range(len(options)))
-            try:
-                default_index = radio_values.index(int(default_value)) if default_value is not None else 0
-            except Exception:
-                default_index = 0
+            radio_values = [None] + list(option_ids)
+            default_index = radio_values.index(default_value) if default_value in radio_values else 0
 
             selected = st.radio(
                 label=f"Select answer for check {idx}",
                 options=radio_values,
                 index=default_index,
-                format_func=lambda i, opts=options: "Select an answer..." if i is None else opts[i],
+                format_func=lambda oid, mapping=option_text_by_id: (
+                    "Select an answer..." if oid is None else mapping.get(oid, str(oid))
+                ),
                 key=qkey,
                 label_visibility="collapsed",
             )
-            correct_index = int(item.get("answer_index", -1))
+
+            correct_option_id = str(item.get("correct_option_id") or "")
             option_explanations = item.get("option_explanations", []) or []
+
             if st.button(f"Check answer {idx}", key=f"{qkey}_btn", use_container_width=True):
                 if selected is None:
                     st.warning("Select an answer first.")
-                elif selected == correct_index:
+                elif selected == correct_option_id:
                     st.success("Correct. " + str(item.get("explanation", "")))
                 else:
                     st.error("Not quite.")
-                    if isinstance(selected, int) and selected < len(option_explanations) and option_explanations[selected]:
-                        st.warning(str(option_explanations[selected]))
+                    try:
+                        selected_index = option_ids.index(selected)
+                    except Exception:
+                        selected_index = -1
+
+                    if 0 <= selected_index < len(option_explanations) and option_explanations[selected_index]:
+                        st.warning(str(option_explanations[selected_index]))
                     else:
                         st.caption("This option misses the topic-specific mechanism. Re-read the tutor narrative and try again.")
+
                     st.caption("The correct option is intentionally not shown. Fix the reasoning, not the guess.")
 
     st.divider()
     st.markdown("#### Save MCQ evidence")
-    st.caption("These MCQs now count. Save them before final evaluation. V3.4 scores the exact MCQs displayed in this run. Answer all displayed MCQs, reach 70%+, and clear critical checks.")
+    st.caption(
+        "These MCQs now count. Save them before final evaluation. V3.5 balances answer positions per run and scores stable option IDs. Answer all displayed MCQs, reach 70%+, and clear critical checks."
+    )
 
-    current_result = None
     if run_state is not None:
         current_payload = build_mcq_submission_payload(
             topic_id=topic_id,
             run_id=run_state["run_id"],
             mcqs=mcqs,
             selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
+            seed_context=run_state["run_id"],
         )
+
         current_result = current_payload.get("result", {})
+
         c1, c2, c3 = st.columns(3)
         c1.metric("Answered", f"{current_result.get('answered', 0)}/{current_result.get('total', 0)}")
         c2.metric("MCQ Score", f"{current_result.get('score_pct', 0)}%")
         c3.metric("Gate", "PASS" if current_result.get("passed") else "NOT YET")
+
+        with st.expander("MCQ audit", expanded=False):
+            positions = []
+            for item in mcqs:
+                try:
+                    positions.append(int(item.get("answer_index")))
+                except Exception:
+                    pass
+
+            labels = ["A", "B", "C", "D", "E", "F"]
+            max_options = max([len(item.get("options", [])) for item in mcqs] or [0])
+            distribution = {
+                labels[i]: positions.count(i)
+                for i in range(min(6, max_options))
+            }
+
+            st.caption(f"Correct-answer position distribution for this run: {distribution}")
 
     if awaiting_run is not None and run_state is not None:
         if st.button("Save MCQ Answers", use_container_width=True, type="primary"):
@@ -2059,14 +2099,17 @@ def render_pre_mission_mcqs(
                 topic_id=topic_id,
                 mcqs=mcqs,
             )
-            result = payload.get("result", {})
-            if result.get("passed"):
-                st.success(f"MCQ gate passed: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
-            else:
-                st.warning(f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
-                if result.get("total", 0) > 0 and not result.get("critical_failed") and result.get("score_pct", 0) >= 70:
-                    st.caption("If this still fails, refresh the page and evaluate again. V3.4 prevents double-shuffling between display and scoring.")
 
+            result = payload.get("result", {})
+
+            if result.get("passed"):
+                st.success(
+                    f"MCQ gate passed: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%)."
+                )
+            else:
+                st.warning(
+                    f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%)."
+                )
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
 
