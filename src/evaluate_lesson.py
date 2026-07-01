@@ -301,25 +301,42 @@ def load_optional_json(relative_path: str | None) -> Dict[str, Any] | None:
 def load_mcq_submission(run_dir: Path, topic_id: str) -> Dict[str, Any] | None:
     """Load and rescore a saved V3 MCQ submission.
 
-    The UI persists selections to runs/<run_id>/mcq_submission.json. Evaluation
-    rescoring here makes the gate deterministic and independent of UI state.
+    V3.5 scoring rule: evaluate the exact MCQs displayed and saved for this
+    run. Do not rebuild/shuffle from Supabase during evaluation, because that
+    can change answer order and corrupt the result.
     """
     path = run_dir / "mcq_submission.json"
+
     if not path.exists():
         return None
+
     try:
         payload = load_json(path)
+
         if not isinstance(payload, dict):
             return None
-        learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
-        mcqs = (learning_design or {}).get("knowledge_checks", []) or []
+
+        mcqs = payload.get("items") if isinstance(payload.get("items"), list) else None
+
+        if not mcqs:
+            learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+            mcqs = (learning_design or {}).get("knowledge_checks", []) or []
+
         selections = payload.get("selections", {}) or {}
-        payload["result"] = score_mcq_submission(topic_id=topic_id, mcqs=mcqs, selections=selections)
+        seed_context = str(payload.get("seed_context") or run_dir.name)
+
+        payload["result"] = score_mcq_submission(
+            topic_id=topic_id,
+            mcqs=mcqs,
+            selections=selections,
+            seed_context=seed_context,
+        )
+
         write_json(f"runs/{run_dir.name}/mcq_submission.json", payload)
         return payload
+
     except Exception:
         return None
-
 
 def filter_assessment_for_v3(topic_id: str, assessment: Assessment) -> Assessment:
     questions = filter_assessment_questions(topic_id, assessment.questions)
