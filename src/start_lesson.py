@@ -1,418 +1,280 @@
 from __future__ import annotations
 
-import csv
-import hashlib
-import hmac
+import argparse
 import json
 import os
-import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from html import escape
-from zoneinfo import ZoneInfo
 
-import streamlit as st
-import streamlit.components.v1 as components
+import yaml
 
-from src.utils.curriculum_catalog import load_topic_catalog_source
-from src.utils.rewards import get_topic_reward_state, load_rewards_state
+from src.agents.architect_lens import (
+    build_architect_lens_payload,
+    generate_architect_note,
+)
+from src.agents.assessor import build_assessor_payload, generate_assessment
+from src.agents.teacher import build_teacher_payload
+from src.agents.teacher_quality import generate_teacher_note_with_quality_loop
+from src.agents.topic_selector import select_topic
+from src.schemas import (
+    ArchitectNote,
+    Assessment,
+    AssessmentQuestion,
+    ConceptNote,
+    RunArtifacts,
+    RunScores,
+    RunState,
+    Topic,
+    UseCaseMapping,
+)
+from src.utils.llm_client import build_llm_callable
+from src.utils.repo_writer import append_jsonl, write_json, write_markdown
+from src.utils.supabase_store import append_event, upsert_artifact, upsert_run, fetch_topic_learning_design
+from src.utils.curriculum_catalog import load_topic_catalog_dicts
 from src.utils.tracker import read_progress_rows
-from src.utils.cloud_state import repair_cloud_state_on_startup
-from src.utils.code_runner import run_code_exercise
-from src.agents.draft_verifier import verify_draft_answers
-from src.agents.lesson_booster import build_lesson_booster
-from src.agents.writing_assist import analyze_answer_text
-from src.agents.tutor_narrative import get_tutor_narrative
-from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
-from src.schemas import ArchitectNote, Assessment, ConceptNote
-from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources, fetch_topic_learning_design
-from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
-from src.utils.v23_mastery_policy import display_status as v23_display_status, needs_repair as v23_needs_repair, is_mastered as v23_is_mastered
-from src.utils.v23_tutor_quality import enhance_learning_design
-from src.utils.v3_assessment_policy import (
-    build_mcq_submission_payload,
-    explain_contract,
-    filter_assessment_questions,
-    filter_written_answer_items,
-    normalize_mcq_items,
-    score_mcq_submission,
-    written_task_limit,
+from src.practice.exercise_bank import build_practice_submission_template, get_exercise_for_topic
+from src.checkpoints.checkpoint_bank import (
+    build_checkpoint_architect_note,
+    build_checkpoint_assessment,
+    build_checkpoint_concept_note,
+    is_checkpoint_topic,
+)
+from src.blueprints.learning_design import (
+    get_bundled_learning_design,
+    design_to_concept_note,
+    design_to_architect_note,
+    design_to_assessment,
+)
+from src.blueprints.advanced_ml import (
+    blueprint_context,
+    blueprint_to_architect_note,
+    blueprint_to_assessment,
+    blueprint_to_concept_note,
+    has_blueprint,
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-RUNS_DIR = PROJECT_ROOT / "runs"
-DATA_DIR = PROJECT_ROOT / "data"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONFIG_DIR = PROJECT_ROOT / "config"
 TOPICS_DIR = PROJECT_ROOT / "topics"
-NOTES_DIR = PROJECT_ROOT / "notes"
-ASSESSMENTS_DIR = PROJECT_ROOT / "assessments"
+RUNS_DIR = PROJECT_ROOT / "runs"
 
 
-# -----------------------------
-# Basic loaders
-# -----------------------------
-def load_json(path: Path) -> Dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+class StartLessonError(Exception):
+    """Raised when lesson generation fails."""
 
 
-def load_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+def load_yaml(file_path: Path) -> Dict[str, Any]:
+    if not file_path.exists():
+        raise StartLessonError(f"YAML file not found: {file_path}")
+
+    with file_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict):
+        raise StartLessonError(f"Expected top-level object in YAML: {file_path}")
+
+    return data
 
 
-def load_progress_tracker() -> List[Dict[str, str]]:
-    try:
-        return read_progress_rows()
-    except Exception:
-        tracker_path = DATA_DIR / "progress_tracker.csv"
-        if not tracker_path.exists():
-            return []
-        with tracker_path.open("r", encoding="utf-8", newline="") as f:
-            return list(csv.DictReader(f))
+def load_json(file_path: Path) -> Any:
+    if not file_path.exists():
+        raise StartLessonError(f"JSON file not found: {file_path}")
+
+    with file_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def load_run_history() -> List[Dict[str, Any]]:
-    history_path = DATA_DIR / "run_history.jsonl"
-    if not history_path.exists():
-        return []
-
-    rows: List[Dict[str, Any]] = []
-    with history_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except Exception:
-                continue
-    return rows
+def load_topic_catalog() -> List[Topic]:
+    data = load_topic_catalog_dicts(prefer_supabase=True)
+    if not isinstance(data, list) or not data:
+        raise StartLessonError("No topic catalog found. Check Supabase mlos_topic_catalog or local topics/topic_catalog.json.")
+    return [Topic(**item) for item in data]
 
 
-def get_secret_value(key: str, default: Any = None) -> Any:
-    try:
-        return st.secrets.get(key, default)
-    except Exception:
-        return default
+def get_topic_by_id(topic_catalog: List[Topic], topic_id: str) -> Topic:
+    for topic in topic_catalog:
+        if topic.topic_id == topic_id:
+            return topic
+    raise StartLessonError(f"Topic not found: {topic_id}")
 
 
-def _render_session_heartbeat_status() -> None:
-    """Render hosted-session heartbeat plus a real browser-side IST clock.
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-    Two separate things happen here:
-    1. The Streamlit fragment reruns this function every 60 seconds, touching the
-       Python backend while the browser tab and laptop are active.
-    2. The embedded browser clock updates every second inside the page, so the
-       visible clock behaves like an actual clock instead of waiting for the
-       backend heartbeat.
-    """
-    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-    backend_heartbeat_text = now_ist.strftime("%H:%M:%S IST")
-    st.session_state["last_backend_heartbeat_ist"] = backend_heartbeat_text
 
-    components.html(
-        f"""
-        <div class="heartbeat-shell">
-          <div class="heartbeat-card">
-            <span class="heartbeat-dot"></span>
-            <span class="heartbeat-main">Session active</span>
-            <span class="heartbeat-separator">·</span>
-            <span>IST <span id="mlos-ist-clock">--:--:--</span></span>
-            <span class="heartbeat-separator">·</span>
-            <span class="heartbeat-muted">Backend ping {escape(backend_heartbeat_text)}</span>
-          </div>
-        </div>
-        <style>
-          html, body {{
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          }}
-          .heartbeat-shell {{
-            display: flex;
-            justify-content: flex-end;
-            align-items: center;
-            width: 100%;
-            box-sizing: border-box;
-            padding: 0 0 6px 0;
-          }}
-          .heartbeat-card {{
-            display: inline-flex;
-            align-items: center;
-            gap: 0.45rem;
-            border-radius: 999px;
-            padding: 0.42rem 0.76rem;
-            background: #eef3f8;
-            border: 1px solid rgba(24, 128, 91, 0.28);
-            box-shadow: 0 10px 24px rgba(32, 48, 70, 0.08);
-            color: #34465b;
-            font-size: 13px;
-            font-weight: 750;
-            white-space: nowrap;
-          }}
-          .heartbeat-dot {{
-            width: 0.62rem;
-            height: 0.62rem;
-            border-radius: 999px;
-            background: #22c55e;
-            box-shadow: 0 0 0 rgba(34, 197, 94, 0.55);
-            animation: heartbeatPulse 1.8s infinite;
-          }}
-          .heartbeat-main {{ color: #17684a; }}
-          .heartbeat-muted {{ color: #586a80; font-weight: 650; }}
-          .heartbeat-separator {{ color: #8391a5; }}
-          #mlos-ist-clock {{
-            color: #1e2b3d;
-            font-variant-numeric: tabular-nums;
-            letter-spacing: 0.02em;
-          }}
-          @keyframes heartbeatPulse {{
-            0% {{ box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55); }}
-            70% {{ box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); }}
-            100% {{ box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }}
-          }}
-          @media (max-width: 780px) {{
-            .heartbeat-shell {{ justify-content: flex-start; }}
-            .heartbeat-card {{ font-size: 12px; flex-wrap: wrap; border-radius: 16px; white-space: normal; }}
-          }}
-        </style>
-        <script>
-          const clockEl = document.getElementById("mlos-ist-clock");
-          function updateISTClock() {{
-            const now = new Date();
-            const parts = new Intl.DateTimeFormat("en-IN", {{
-              timeZone: "Asia/Kolkata",
-              hour: "2-digit",
-              minute: "2-digit",
-              second: "2-digit",
-              hour12: false
-            }}).format(now);
-            if (clockEl) {{ clockEl.textContent = parts; }}
-          }}
-          updateISTClock();
-          setInterval(updateISTClock, 1000);
-        </script>
-        """,
-        height=44,
-        scrolling=False,
+def generate_run_id(topic_id: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{timestamp}_{topic_id}"
+
+
+def write_log(run_id: str, message: str) -> None:
+    log_path = PROJECT_ROOT / "runs" / run_id / "logs.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(f"[{utc_now_iso()}] {message}\n")
+
+
+def concept_note_to_markdown(concept_note) -> str:
+    return f"""---
+topic_id: {concept_note.topic_id}
+title: {concept_note.title}
+---
+
+# Simple Explanation
+
+{concept_note.simple_explanation}
+
+# Wrong Mental Model
+
+{concept_note.wrong_mental_model}
+
+# Correct Mental Model
+
+{concept_note.correct_mental_model}
+
+# Tiny Example
+
+{concept_note.tiny_example}
+
+# Why It Matters
+
+{concept_note.why_it_matters}
+
+# Edge Case
+
+{concept_note.edge_case}
+
+# Three Takeaways
+
+- {concept_note.three_takeaways[0]}
+- {concept_note.three_takeaways[1]}
+- {concept_note.three_takeaways[2]}
+"""
+
+
+def architect_note_to_markdown(architect_note) -> str:
+    use_case_lines = []
+    for item in architect_note.use_case_mapping:
+        use_case_lines.append(f"- **{item.context}**: {item.relevance}")
+
+    return f"""---
+topic_id: {architect_note.topic_id}
+---
+
+# Architect Summary
+
+{architect_note.architect_summary}
+
+# Design Implications
+
+- {architect_note.design_implications[0]}
+- {architect_note.design_implications[1]}
+
+# Common Mistakes
+
+- {architect_note.common_mistakes[0]}
+- {architect_note.common_mistakes[1]}
+
+# Production Risks
+
+- {architect_note.production_risks[0]}
+- {architect_note.production_risks[1]}
+
+# Interview Framing
+
+{architect_note.interview_framing}
+
+# Use Case Mapping
+
+{chr(10).join(use_case_lines) if use_case_lines else "- None"}
+"""
+
+
+def assessment_to_markdown(assessment) -> str:
+    lines = [
+        "---",
+        f"topic_id: {assessment.topic_id}",
+        "---",
+        "",
+        "# Assessment Questions",
+        "",
+    ]
+
+    for q in assessment.questions:
+        lines.append(f"## {q.question_id} [{q.type}]")
+        lines.append("")
+        lines.append(q.question)
+        lines.append("")
+        lines.append("Expected focus:")
+        for item in q.expected_focus:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def answer_template_to_markdown(assessment) -> str:
+    lines = [
+        "---",
+        f"topic_id: {assessment.topic_id}",
+        "status: pending_user_answers",
+        "---",
+        "",
+        "# Your Answers",
+        "",
+        "Write your answers below each question.",
+        "",
+    ]
+
+    for q in assessment.questions:
+        lines.append(f"## {q.question_id} [{q.type}]")
+        lines.append("")
+        lines.append(f"Question: {q.question}")
+        lines.append("")
+        lines.append("Answer:")
+        lines.append("")
+        lines.append("[Write your answer here]")
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def answer_template_to_json(assessment) -> dict:
+    return {
+        "topic_id": assessment.topic_id,
+        "status": "pending_user_answers",
+        "answers": [
+            {
+                "question_id": q.question_id,
+                "type": q.type,
+                "question": q.question,
+                "answer": "",
+            }
+            for q in assessment.questions
+        ],
+    }
+
+
+def resolve_requested_topic_id() -> Optional[str]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--topic_id", type=str, default=None)
+    args, _ = parser.parse_known_args()
+
+    return (
+        args.topic_id
+        or os.getenv("ML_OS_TOPIC_ID")
+        or os.getenv("LEARNING_OS_TOPIC_ID")
     )
 
 
-if hasattr(st, "fragment"):
-    @st.fragment(run_every="60s")
-    def render_session_heartbeat() -> None:
-        _render_session_heartbeat_status()
-else:
-    def render_session_heartbeat() -> None:
-        _render_session_heartbeat_status()
-
-
-# -----------------------------
-# Auth
-# -----------------------------
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def require_login() -> None:
-    auth_enabled = bool(get_secret_value("APP_AUTH_ENABLED", True))
-    if not auth_enabled:
-        return
-
-    expected_hash = str(get_secret_value("APP_PASSWORD_HASH", "")).strip()
-    if not expected_hash:
-        st.error("Security misconfiguration: APP_PASSWORD_HASH is missing.")
-        st.stop()
-
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-
-    if st.session_state.authenticated:
-        with st.sidebar:
-            st.success("Authenticated")
-            if st.button("Logout"):
-                st.session_state.authenticated = False
-                st.rerun()
-        return
-
-    st.markdown("## 🔐 Private Learning OS")
-    st.caption("Enter the app password to continue.")
-
-    password = st.text_input("Password", type="password")
-    if st.button("Unlock"):
-        provided_hash = hash_password(password)
-        if hmac.compare_digest(provided_hash, expected_hash):
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Invalid password.")
-
-    st.stop()
-
-
-# -----------------------------
-# Theme
-# -----------------------------
-def inject_theme() -> None:
-    st.markdown(
-        """
-        <style>
-        :root {
-            --bg: #e6ecf3;
-            --panel: #f7f9fc;
-            --panel-soft: #e5ebf3;
-            --line: #c9d4e2;
-            --text: #1d293b;
-            --muted: #53657b;
-            --primary: #245a92;
-            --primary-soft: #dbe7f5;
-            --teal: #116a68;
-            --teal-soft: #dbeeea;
-            --risk: #885416;
-            --risk-soft: #f5ead8;
-            --success: #17684a;
-        }
-        html { scroll-behavior: smooth; }
-        #MainMenu, footer, div[data-testid="stDecoration"], div[data-testid="stStatusWidget"] { visibility: hidden; display: none; }
-        header[data-testid="stHeader"] { height: 0rem; min-height: 0rem; background: transparent; }
-        div[data-testid="stToolbar"] { visibility: hidden; height: 0rem; position: fixed; }
-        body, .stApp, [data-testid="stAppViewContainer"] {
-            background: linear-gradient(145deg, #e8eef5 0%, #e2e9f1 48%, #dae3ed 100%);
-            color: var(--text);
-        }
-        .block-container { padding-top: 1.05rem; padding-bottom: 3rem; max-width: 1440px; }
-        .main-title {
-            font-size: 2.55rem; font-weight: 900; letter-spacing: -0.045em;
-            color: #173b64; margin-bottom: 0.2rem;
-        }
-        .sub-title, .small-muted, .topic-subline { color: var(--muted); }
-        .session-heartbeat { display:flex; justify-content:flex-end; align-items:center; gap:.55rem; margin:-.35rem 0 .75rem; color:var(--muted); font-size:.84rem; font-weight:700; }
-        .session-heartbeat-card { display:inline-flex; align-items:center; gap:.5rem; border-radius:999px; padding:.42rem .72rem; background:#eef3f8; border:1px solid #c6ddd5; box-shadow:0 6px 18px rgba(16, 42, 67, .07); }
-        .heartbeat-dot { width:.62rem; height:.62rem; border-radius:999px; background:#22a06b; box-shadow:0 0 0 rgba(34,160,107,.45); animation:heartbeatPulse 1.8s infinite; }
-        @keyframes heartbeatPulse { 0% { box-shadow:0 0 0 0 rgba(34,160,107,.42); } 70% { box-shadow:0 0 0 8px rgba(34,160,107,0); } 100% { box-shadow:0 0 0 0 rgba(34,160,107,0); } }
-        div[data-testid="stMetric"] { background:var(--panel); border:1px solid var(--line); padding:1rem; border-radius:18px; box-shadow:0 8px 24px rgba(21, 42, 73, .06); }
-        div[data-testid="stMetric"] label { color:var(--muted) !important; }
-        div[data-testid="stMetricValue"] { color:var(--text) !important; font-weight:800; }
-        /* Action buttons: Review, Redo, Save Answers, Verify Draft, Run Code, Submit */
-        .stButton > button,
-        div[data-testid="stButton"] > button,
-        div[data-testid="stButton"] button,
-        div[data-testid="stFormSubmitButton"] > button,
-        div[data-testid="stFormSubmitButton"] button {
-            border-radius:13px !important;
-            border:1px solid #204e80 !important;
-            background:#245a92 !important;
-            color:#ffffff !important;
-            font-weight:800 !important;
-            padding:.68rem 1rem !important;
-            box-shadow:0 6px 14px rgba(36,90,146,.18) !important;
-            transition:all .16s ease !important;
-        }
-        .stButton > button:hover,
-        div[data-testid="stButton"] > button:hover,
-        div[data-testid="stButton"] button:hover,
-        div[data-testid="stFormSubmitButton"] > button:hover,
-        div[data-testid="stFormSubmitButton"] button:hover {
-            transform:translateY(-1px);
-            background:#1c486f !important;
-            border-color:#1c486f !important;
-            color:#ffffff !important;
-            box-shadow:0 10px 18px rgba(36,90,146,.22) !important;
-        }
-        .stButton > button:active,
-        div[data-testid="stButton"] > button:active,
-        div[data-testid="stButton"] button:active,
-        div[data-testid="stFormSubmitButton"] > button:active,
-        div[data-testid="stFormSubmitButton"] button:active {
-            background:#173b64 !important;
-            border-color:#173b64 !important;
-            color:#ffffff !important;
-        }
-        .stButton > button:focus,
-        div[data-testid="stButton"] > button:focus,
-        div[data-testid="stFormSubmitButton"] > button:focus {
-            color:#ffffff !important;
-            box-shadow:0 0 0 3px rgba(36,90,146,.22) !important;
-        }
-        .stButton > button p,
-        .stButton > button span,
-        div[data-testid="stButton"] button p,
-        div[data-testid="stButton"] button span,
-        div[data-testid="stFormSubmitButton"] button p,
-        div[data-testid="stFormSubmitButton"] button span {
-            color:#ffffff !important;
-            font-weight:800 !important;
-        }
-        .stButton > button:disabled,
-        div[data-testid="stButton"] > button:disabled,
-        div[data-testid="stButton"] button:disabled,
-        div[data-testid="stFormSubmitButton"] > button:disabled,
-        div[data-testid="stFormSubmitButton"] button:disabled {
-            background:#dde5ee !important;
-            border-color:#c9d4e2 !important;
-            color:#66768a !important;
-            box-shadow:none !important;
-            transform:none !important;
-            opacity:1 !important;
-        }
-        .stButton > button:disabled p,
-        .stButton > button:disabled span,
-        div[data-testid="stButton"] button:disabled p,
-        div[data-testid="stButton"] button:disabled span,
-        div[data-testid="stFormSubmitButton"] button:disabled p,
-        div[data-testid="stFormSubmitButton"] button:disabled span {
-            color:#66768a !important;
-            font-weight:750 !important;
-        }
-        div[data-testid="stTabs"] button { border-radius:999px; color:#4f6075; padding:.62rem 1rem; font-weight:700; }
-        div[data-testid="stTabs"] button[aria-selected="true"] { background:var(--primary-soft); color:#1d4c7d; border:1px solid #b8cade; }
-        div[data-testid="stTextArea"] textarea, div[data-baseweb="select"] > div, .stTextInput input { background:#f7f9fc; border:1px solid #bfccdc; color:var(--text); border-radius:14px; }
-        div[data-testid="stTextArea"] textarea:focus { border-color:#6f98c6; box-shadow:0 0 0 3px rgba(36,90,146,.13); }
-        .level-card { border-radius:20px; padding:1rem; min-height:205px; background:var(--panel); border:1px solid var(--line); box-shadow:0 8px 22px rgba(21,42,73,.07); transition:all .16s ease; }
-        .level-card:hover { transform:translateY(-2px); border-color:#9eb5d0; box-shadow:0 12px 28px rgba(21,42,73,.11); }
-        .level-card-selected { border-color:#678fbc; box-shadow:0 10px 26px rgba(36,90,146,.13); }
-        .level-id, .topic-kicker { color:#275884; font-size:.78rem; font-weight:850; text-transform:uppercase; letter-spacing:.10em; margin-bottom:.45rem; }
-        .level-title { font-size:1.07rem; line-height:1.3; font-weight:850; color:var(--text); margin-bottom:.8rem; }
-        .level-status { display:inline-flex; border-radius:999px; padding:.28rem .62rem; font-size:.82rem; font-weight:750; color:#145b67; background:#ddecef; border:1px solid #bed6dd; margin-bottom:.75rem; }
-        .level-stars { font-size:1.2rem; letter-spacing:.06em; color:#ae7418; margin-bottom:.65rem; }
-        .level-badge { color:var(--muted); font-size:.92rem; font-weight:650; }
-        .app-header-row { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; margin-bottom:1rem; }
-        .status-strip { display:flex; flex-wrap:wrap; gap:.55rem; margin:.75rem 0 1.2rem; }
-        .status-pill { display:inline-flex; align-items:center; gap:.35rem; border-radius:999px; padding:.42rem .72rem; background:var(--panel); border:1px solid var(--line); color:var(--muted); font-size:.84rem; font-weight:700; }
-        .current-topic-hero { border-radius:22px; padding:1.15rem 1.22rem; margin-bottom:1rem; background:linear-gradient(135deg, #f7f9fc, #e8eef6); border:1px solid #c6d4e5; box-shadow:0 10px 28px rgba(21,42,73,.06); }
-        .topic-heading { color:var(--text); font-size:1.68rem; line-height:1.18; font-weight:900; letter-spacing:-.03em; margin-bottom:.45rem; }
-        .workflow-strip { display:flex; gap:.5rem; flex-wrap:wrap; margin:.75rem 0 0; }
-        .workflow-step { border-radius:999px; padding:.4rem .68rem; background:#e1eaf5; border:1px solid #bfd0e4; color:#234f7d; font-size:.82rem; font-weight:760; }
-        .section-card { border-radius:18px; padding:.92rem 1rem; margin-bottom:.78rem; background:var(--panel); border:1px solid var(--line); box-shadow:0 5px 17px rgba(21,42,73,.06); }
-        .section-card h4 { margin:0 0 .42rem; color:var(--text); font-size:1rem; font-weight:850; }
-        .section-card p, .section-card li { color:#35465b; line-height:1.54; font-size:.95rem; }
-        .section-card ul { margin:.42rem 0 0 1.05rem; padding:0; }
-        .two-card-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.8rem; margin-bottom:.2rem; }
-        .callout-good { border-color:#adcec6; background:var(--teal-soft); }
-        .callout-risk { border-color:#dfbf8f; background:var(--risk-soft); }
-        .mission-card { border-radius:16px; padding:.9rem 1rem; margin:.85rem 0 .6rem; background:var(--panel); border:1px solid var(--line); }
-        .mission-card-title { color:var(--text); font-size:.97rem; font-weight:850; margin-bottom:.35rem; }
-        .mission-question { color:#35465b; line-height:1.48; }
-        .save-panel { border-radius:18px; padding:1rem; background:#e1eaf5; border:1px solid #c1d1e3; margin-bottom:1rem; }
-        .stAlert { border-radius:15px; } hr { border-color:#cbd6e3; }
-        @media (max-width: 900px) { .two-card-grid { grid-template-columns:1fr; } .topic-heading { font-size:1.3rem; } .main-title { font-size:2rem; } }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# -----------------------------
-# Run discovery
-# -----------------------------
-def find_latest_run(phase: Optional[str] = None) -> Optional[Path]:
+def find_active_awaiting_run() -> Optional[Path]:
     if not RUNS_DIR.exists():
         return None
 
-    candidates = []
+    candidates: List[Path] = []
     for run_dir in RUNS_DIR.iterdir():
         if not run_dir.is_dir():
             continue
@@ -426,2535 +288,586 @@ def find_latest_run(phase: Optional[str] = None) -> Optional[Path]:
         except Exception:
             continue
 
-        if phase is None or state.get("phase") == phase:
+        if (
+            state.get("phase") == "awaiting_user_answers"
+            and state.get("next_action") == "await_user_answers"
+        ):
             candidates.append(run_dir)
 
     if not candidates:
         return None
 
-    return sorted(candidates, key=lambda p: p.name)[-1]
+    return sorted(candidates)[-1]
 
 
-def topic_status_map(progress_rows: List[Dict[str, str]]) -> Dict[str, str]:
-    return {str(row.get("topic_id", "")): str(row.get("status", "")) for row in progress_rows}
+
+def _completed_topics_from_progress() -> set[str]:
+    """Return topics that durable progress says are already completed."""
+    try:
+        rows = read_progress_rows()
+    except Exception:
+        return set()
+    completed: set[str] = set()
+    for row in rows:
+        topic_id = str(row.get("topic_id") or "").strip()
+        status = str(row.get("status") or "").strip().lower()
+        if topic_id and status == "completed":
+            completed.add(topic_id)
+    return completed
 
 
-def latest_evaluation_run_id_for_topic(topic_id: str) -> Optional[str]:
-    """Return the newest finalized local/cache run for one topic.
-
-    Run IDs begin with ``YYYYMMDD_HHMMSS``, so lexical comparison is safe.
-    Supabase evaluation runs are materialized locally before this helper is
-    used by the active-run selector.
-    """
-    if not RUNS_DIR.exists() or not topic_id:
+def _run_started_at_from_id(run_id: str) -> Optional[datetime]:
+    """Parse YYYYMMDD_HHMMSS from a run id when created_at is unavailable."""
+    try:
+        prefix = "_".join(str(run_id or "").split("_")[:2])
+        return datetime.strptime(prefix, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+    except Exception:
         return None
 
-    finalized_run_ids: List[str] = []
 
-    for run_dir in RUNS_DIR.iterdir():
-        if not run_dir.is_dir():
-            continue
-
-        state_path = run_dir / "run_state.json"
-        if not state_path.exists():
-            continue
-
-        try:
-            state = load_json(state_path)
-        except Exception:
-            continue
-
-        if str(state.get("topic_id") or "").strip() != topic_id:
-            continue
-
-        if str(state.get("phase") or "").strip() != "evaluation_complete":
-            continue
-
-        finalized_run_ids.append(str(state.get("run_id") or run_dir.name))
-
-    return max(finalized_run_ids) if finalized_run_ids else None
+def _is_old_awaiting_run(active_state: Dict[str, Any], max_age_hours: int = 12) -> bool:
+    started_at = _run_started_at_from_id(str(active_state.get("run_id") or ""))
+    if started_at is None:
+        return False
+    return datetime.now(timezone.utc) - started_at > timedelta(hours=max_age_hours)
 
 
-def is_stale_awaiting_run(
-    run_dir: Optional[Path],
-    progress_rows: List[Dict[str, str]],
-    rewards_state: Optional[Dict[str, Any]] = None,
+def _is_stale_active_run(
+    active_state: Dict[str, Any],
+    completed_topics: set[str],
+    requested_topic_id: Optional[str] = None,
 ) -> bool:
-    """Ignore an awaiting run only when a newer final run supersedes it.
+    """Return True only when an old awaiting run should stop blocking lessons.
 
-    Historical mastery must not hide a deliberately started repair or redo.
-    A current ``in_progress`` run remains resumable even when an older attempt
-    already earned three stars. It is stale only when a later evaluation for
-    the same topic has already finalized.
+    A recent repair or redo for a previously completed topic is intentional and
+    must remain active. Completion history must not immediately invalidate it.
     """
-    if run_dir is None:
+    topic_id = str(active_state.get("topic_id") or "").strip()
+    phase = str(active_state.get("phase") or "").strip()
+    next_action = str(active_state.get("next_action") or "").strip()
+    status = str(active_state.get("status") or "").strip().lower()
+    requested = str(requested_topic_id or "").strip()
+
+    if not topic_id:
         return False
 
+    if phase != "awaiting_user_answers" or next_action != "await_user_answers":
+        return False
+
+    if status != "in_progress":
+        return True
+
+    # Historical completion does not invalidate a newly created repair/redo.
+    # Clear it only after it has genuinely aged beyond the stale threshold.
+    if topic_id in completed_topics and _is_old_awaiting_run(active_state):
+        return True
+
+    # An old run for another topic may be cleared when the user deliberately
+    # starts a different repair.
+    if requested and requested != topic_id and _is_old_awaiting_run(active_state):
+        return True
+
+    return False
+
+def _abandon_stale_active_run(active_run: Path, active_state: Dict[str, Any]) -> None:
+    """Mark a stale local active run as abandoned so it stops blocking startup."""
+    topic_id = str(active_state.get("topic_id") or "")
+    run_id = str(active_state.get("run_id") or active_run.name)
+    active_state["phase"] = "abandoned_stale_run"
+    active_state["status"] = "abandoned"
+    active_state["next_action"] = "ignored_stale_completed_topic_run"
+    active_state["abandoned_reason"] = (
+        "Local awaiting run was for a topic already completed in durable progress. "
+        "It was abandoned automatically so the next unlocked curriculum item can start."
+    )
     try:
-        state = load_json(run_dir / "run_state.json")
-    except Exception:
-        return False
-
-    topic_id = str(state.get("topic_id") or "").strip()
-    phase = str(state.get("phase") or "").strip()
-    status = str(state.get("status") or "").strip().lower()
-    current_run_id = str(state.get("run_id") or run_dir.name)
-
-    if not topic_id or phase != "awaiting_user_answers":
-        return False
-
-    if status == "in_progress":
-        latest_final_run_id = latest_evaluation_run_id_for_topic(topic_id)
-        return bool(latest_final_run_id and latest_final_run_id > current_run_id)
-
-    # Defensive cleanup for malformed cache entries that still claim to be in
-    # the awaiting phase even though they are no longer active.
-    return status in {"completed", "abandoned", "cancelled", "expired"}
-
-def get_latest_evaluation_run() -> Optional[Path]:
-    local_run = find_latest_run("evaluation_complete")
-    if local_run is not None:
-        return local_run
-    return sync_latest_evaluation_from_supabase()
-
-
-def get_history_entry_for_run(run_id: str) -> Optional[Dict[str, Any]]:
-    history = load_run_history()
-    matches = [row for row in history if row.get("run_id") == run_id]
-    if not matches:
-        return None
-    return matches[-1]
-
-
-# -----------------------------
-# Runtime execution
-# -----------------------------
-def run_module(
-    module_name: str,
-    args: Optional[List[str]] = None,
-    env_extra: Optional[Dict[str, str]] = None,
-) -> tuple[bool, str]:
-    cmd = [sys.executable, "-m", module_name]
-    if args:
-        cmd.extend(args)
-
-    env = os.environ.copy()
-    openai_key = get_secret_value("OPENAI_API_KEY", None)
-    if openai_key and "OPENAI_API_KEY" not in env:
-        env["OPENAI_API_KEY"] = str(openai_key)
-    if env_extra:
-        env.update(env_extra)
-
-    result = subprocess.run(
-        cmd,
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
-    ok = result.returncode == 0
-    output = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    return ok, output.strip()
-
-
-def start_lesson_for_topic(topic_id: Optional[str] = None, allow_completed_restart: bool = False) -> tuple[bool, str]:
-    env_extra = None
-    if allow_completed_restart:
-        env_extra = {
-            "ML_OS_ALLOW_RESTART_COMPLETED": "true",
-            "ML_OS_REDO_MODE": "true",
-        }
-    if topic_id:
-        return run_module("src.start_lesson", args=["--topic_id", topic_id], env_extra=env_extra)
-    return run_module("src.start_lesson", env_extra=env_extra)
-
-
-def save_answers(answer_path: Path, data: Dict[str, Any]) -> None:
-    answer_path.parent.mkdir(parents=True, exist_ok=True)
-    answer_path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def mcq_submission_path(awaiting_run: Path) -> Path:
-    return awaiting_run / "mcq_submission.json"
-
-
-def collect_mcq_selections_from_session(run_id: str, topic_id: str, mcqs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    selections: Dict[str, Any] = {}
-
-    for idx, item in enumerate(normalize_mcq_items(mcqs, seed_context=run_id), start=1):
-        qid = str(item.get("id") or f"mcq_{idx:02d}")
-        key = f"{run_id}_{topic_id}_mcq_{idx}"
-        selections[qid] = st.session_state.get(key)
-
-    return selections
-
-def persist_mcq_submission(
-    *,
-    awaiting_run: Path,
-    run_state: Dict[str, Any],
-    topic_id: str,
-    mcqs: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    payload = build_mcq_submission_payload(
-        topic_id=topic_id,
-        run_id=run_state["run_id"],
-        mcqs=mcqs,
-        selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
-        seed_context=run_state["run_id"],
-    )
-    save_answers(mcq_submission_path(awaiting_run), payload)
-    try:
-        upsert_artifact(
-            run_id=run_state["run_id"],
-            artifact_type="mcq_submission",
-            topic_id=topic_id,
-            payload=payload,
-        )
-        append_event(
-            event_type="mcq_submission_saved",
-            run_id=run_state["run_id"],
-            topic_id=topic_id,
-            payload=payload.get("result", {}),
+        (active_run / "run_state.json").write_text(
+            json.dumps(active_state, indent=2, ensure_ascii=False),
+            encoding="utf-8",
         )
     except Exception:
         pass
-    return payload
-
-def load_mcq_submission(awaiting_run: Path) -> Optional[Dict[str, Any]]:
-    path = mcq_submission_path(awaiting_run)
-    if not path.exists():
-        return None
     try:
-        data = load_json(path)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-
-
-# -----------------------------
-# Review / Redo helpers
-# -----------------------------
-def fetch_topic_runs_for_review(topic_id: str, limit: int = 30) -> List[Dict[str, Any]]:
-    """Fetch run history for a topic from Supabase, with local runtime fallback."""
-    rows: List[Dict[str, Any]] = []
-    try:
-        client = get_supabase_client()
-        if client is not None:
-            result = (
-                client.table("mlos_runs")
-                .select("run_id, topic_id, topic_title, phase, status, created_at, updated_at")
-                .eq("topic_id", topic_id)
-                .order("created_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            rows = getattr(result, "data", None) or []
-    except Exception:
-        rows = []
-
-    seen = {row.get("run_id") for row in rows}
-    if RUNS_DIR.exists():
-        local_rows: List[Dict[str, Any]] = []
-        for run_dir in RUNS_DIR.iterdir():
-            state_path = run_dir / "run_state.json"
-            if not state_path.exists():
-                continue
-            try:
-                state = load_json(state_path)
-            except Exception:
-                continue
-            if state.get("topic_id") != topic_id:
-                continue
-            run_id = state.get("run_id") or run_dir.name
-            if run_id in seen:
-                continue
-            local_rows.append(
-                {
-                    "run_id": run_id,
-                    "topic_id": topic_id,
-                    "topic_title": state.get("topic_name") or topic_id,
-                    "phase": state.get("phase"),
-                    "status": state.get("status"),
-                    "created_at": None,
-                    "updated_at": None,
-                    "source": "local_runtime",
-                }
-            )
-        rows.extend(sorted(local_rows, key=lambda item: str(item.get("run_id") or ""), reverse=True))
-
-    return rows
-
-
-def _artifact_payload_map_from_supabase(run_id: str) -> Dict[str, Any]:
-    try:
-        rows = fetch_run_artifacts(run_id)
-    except Exception:
-        rows = []
-    payloads: Dict[str, Any] = {}
-    for row in rows or []:
-        artifact_type = row.get("artifact_type")
-        if not artifact_type:
-            continue
-        payloads[artifact_type] = row.get("payload") if row.get("payload") is not None else row.get("text_payload")
-    return payloads
-
-
-def _artifact_payload_map_from_local(run_id: str) -> Dict[str, Any]:
-    run_dir = RUNS_DIR / run_id
-    payloads: Dict[str, Any] = {}
-    if not run_dir.exists():
-        return payloads
-
-    local_files = {
-        "run_state": run_dir / "run_state.json",
-        "selected_topic": run_dir / "selected_topic.json",
-        "concept_note": run_dir / "concept_note.json",
-        "architect_note": run_dir / "architect_note.json",
-        "assessment": run_dir / "assessment.json",
-        "evaluation": run_dir / "evaluation.json",
-        "answer_coaching": run_dir / "answer_coaching.json",
-        "practice_result": run_dir / "practice_result.json",
-        "capstone_deliverables": run_dir / "capstone_deliverables.json",
-    }
-    for artifact_type, file_path in local_files.items():
-        if file_path.exists():
-            try:
-                payloads[artifact_type] = load_json(file_path)
-            except Exception:
-                pass
-
-    state = payloads.get("run_state") or {}
-    answer_rel = ((state.get("artifacts") or {}).get("answers"))
-    if answer_rel:
-        answer_path = PROJECT_ROOT / answer_rel
-        if answer_path.exists():
-            try:
-                payloads["answers"] = load_json(answer_path)
-            except Exception:
-                pass
-    return payloads
-
-
-def load_review_payloads(run_id: str) -> Dict[str, Any]:
-    payloads = _artifact_payload_map_from_supabase(run_id)
-    local_payloads = _artifact_payload_map_from_local(run_id)
-    for key, value in local_payloads.items():
-        payloads.setdefault(key, value)
-    return payloads
-
-
-def _score_average(scores: Dict[str, Any]) -> Optional[float]:
-    vals = []
-    for key in ["conceptual_clarity", "practical_reasoning", "architect_reasoning", "communication", "coding_correctness"]:
-        value = scores.get(key)
-        if value is None:
-            continue
-        try:
-            vals.append(float(value))
-        except Exception:
-            continue
-    if not vals:
-        return None
-    return sum(vals) / len(vals)
-
-
-def _format_run_option(row: Dict[str, Any]) -> str:
-    run_id = str(row.get("run_id") or "-")
-    phase = str(row.get("phase") or "-")
-    status = str(row.get("status") or "-")
-    created = str(row.get("created_at") or "local")
-    return f"{created} · {status} · {phase} · {run_id}"
-
-
-def render_review_payloads(payloads: Dict[str, Any]) -> None:
-    evaluation = payloads.get("evaluation") or {}
-    answers_doc = payloads.get("answers") or payloads.get("answer_template") or {}
-    coaching_doc = payloads.get("answer_coaching") or {}
-    concept_note = payloads.get("concept_note") or {}
-    architect_note = payloads.get("architect_note") or {}
-
-    if evaluation:
-        st.markdown("### Evaluation")
-        decision = str(evaluation.get("decision", "-")).upper()
-        avg = _score_average(evaluation.get("scores", {}) or {})
-        if avg is not None:
-            st.caption(f"Decision: {decision} · Average score: {avg:.2f}")
-        else:
-            st.caption(f"Decision: {decision}")
-        render_score_cards(evaluation)
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Strengths**")
-            for item in evaluation.get("strengths", []) or []:
-                st.markdown(f"- {item}")
-        with c2:
-            st.markdown("**Weak spots**")
-            for item in evaluation.get("weak_spots", []) or []:
-                st.markdown(f"- {item}")
-
-        if evaluation.get("refined_architect_summary"):
-            st.markdown("**Refined architect summary**")
-            st.info(evaluation.get("refined_architect_summary"))
-    else:
-        st.info("No final evaluation found for this run yet.")
-
-    st.divider()
-    st.markdown("### Answers + Coaching")
-    answers_by_q = {item.get("question_id"): item for item in answers_doc.get("answers", []) or []}
-    coaching_items = (coaching_doc.get("coaching") or []) if isinstance(coaching_doc, dict) else []
-    coaching_by_q = {item.get("question_id"): item for item in coaching_items if isinstance(item, dict)}
-
-    if not answers_by_q and not coaching_by_q:
-        st.info("No answer/coaching artifacts found for this run.")
-    else:
-        qids = sorted(set(answers_by_q) | set(coaching_by_q))
-        for qid in qids:
-            answer_item = answers_by_q.get(qid, {})
-            coaching = coaching_by_q.get(qid, {})
-            question = answer_item.get("question") or coaching.get("question") or qid
-            with st.expander(f"{qid} · {question}", expanded=False):
-                answer = answer_item.get("answer") or coaching.get("your_answer") or ""
-                st.markdown("**Your answer**")
-                st.write(answer if answer else "-")
-
-                if coaching:
-                    quality = coaching.get("answer_quality") or coaching.get("quality_label") or "-"
-                    st.markdown(f"**Coaching verdict:** {str(quality).upper()}")
-                    missing = coaching.get("what_was_missing") or coaching.get("missing") or []
-                    if missing:
-                        st.markdown("**What was missing**")
-                        for item in missing:
-                            st.markdown(f"- {item}")
-                    better = coaching.get("better_answer") or coaching.get("stronger_answer")
-                    if better:
-                        st.markdown("**Stronger sample answer**")
-                        st.info(str(better))
-                    upgrade = coaching.get("architect_upgrade")
-                    if upgrade:
-                        st.markdown("**Architect upgrade**")
-                        st.write(str(upgrade))
-
-    st.divider()
-    capstone_pack = payloads.get("capstone_deliverables") or {}
-    if capstone_pack:
-        st.divider()
-        st.markdown("### Capstone Artifact Pack")
-        st.caption(
-            f"Sections completed: {capstone_pack.get('sections_completed', 0)}/{capstone_pack.get('sections_required', 5)}"
-        )
-        for section_name, section_text in (capstone_pack.get("sections") or {}).items():
-            with st.expander(section_name.replace("_", " ").title(), expanded=False):
-                st.write(section_text or "-")
-        st.markdown("**Required deliverables represented by this pack**")
-        for artifact in capstone_pack.get("required_artifacts", []) or []:
-            st.markdown(f"- {artifact}")
-
-    with st.expander("Lesson artifacts", expanded=False):
-        if concept_note:
-            st.markdown("**Concept note**")
-            st.json(concept_note)
-        if architect_note:
-            st.markdown("**Architect note**")
-            st.json(architect_note)
-
-
-def render_review_redo_tab(progress_rows: List[Dict[str, str]], awaiting_run: Optional[Path], rewards_state: Dict[str, Any]) -> None:
-    st.subheader("Review / Redo")
-    st.caption("Review completed attempts or deliberately start a new attempt for a completed topic. Redo never erases history and rewards keep the best completed attempt.")
-
-    if not progress_rows:
-        st.info("No topics available.")
-        return
-
-    completed_rows = [
-        row for row in progress_rows
-        if row.get("topic_id") and v23_display_status(row, rewards_state) in {"completed", "needs_attention"}
-    ]
-    if not completed_rows:
-        st.info("No reviewed or repairable lessons are available yet.")
-        return
-
-    topic_options = [row.get("topic_id") for row in completed_rows if row.get("topic_id")]
-    default_topic = st.session_state.get("review_topic_id") or (topic_options[0] if topic_options else None)
-    if default_topic not in topic_options and topic_options:
-        default_topic = topic_options[0]
-
-    topic_label_map = {
-        row.get("topic_id"): f"{row.get('topic_id')} · {row.get('title')} · {v23_display_status(row, rewards_state)}"
-        for row in completed_rows
-        if row.get("topic_id")
-    }
-    selected_topic_id = st.selectbox(
-        "Topic",
-        options=topic_options,
-        index=topic_options.index(default_topic) if default_topic in topic_options else 0,
-        format_func=lambda tid: topic_label_map.get(tid, tid),
-    )
-    st.session_state.review_topic_id = selected_topic_id
-
-    topic_row = next((row for row in completed_rows if row.get("topic_id") == selected_topic_id), {})
-    status = v23_display_status(topic_row, rewards_state)
-    topic_reward = get_topic_reward_state(rewards_state, selected_topic_id)
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Status", status or "-")
-    c2.metric("Attempts", topic_row.get("attempt_count", "-"))
-    c3.metric("Best Stars", topic_reward.get("best_stars", 0))
-    c4.metric("Latest Stars", topic_reward.get("latest_stars", topic_reward.get("best_stars", 0)))
-
-    st.markdown("### Start a redo attempt")
-    if awaiting_run is not None:
-        active_state = load_json(awaiting_run / "run_state.json")
-        st.warning(f"Finish the active lesson first: {active_state.get('topic_id')} · {active_state.get('run_id')}")
-    elif status == "needs_attention":
-        st.caption("This starts a repair attempt for a topic below mastery. It does not erase history.")
-        if st.button(f"Start Repair Attempt · {selected_topic_id}", use_container_width=True, type="primary"):
-            with st.spinner(f"Starting repair attempt for {selected_topic_id}..."):
-                ok, output = start_lesson_for_topic(selected_topic_id, allow_completed_restart=False)
-            record_action_result("Start Repair Attempt", ok, output)
-            if ok:
-                st.rerun()
-    else:
-        st.caption("This creates a fresh run for the same topic. It does not erase the old attempt. XP/rewards only improve if the new completed attempt beats the previous best.")
-        if st.button(f"Start Redo Attempt · {selected_topic_id}", use_container_width=True, type="secondary"):
-            with st.spinner(f"Starting redo attempt for {selected_topic_id}..."):
-                ok, output = start_lesson_for_topic(selected_topic_id, allow_completed_restart=True)
-            record_action_result("Start Redo Attempt", ok, output)
-            if ok:
-                st.rerun()
-
-    st.divider()
-    st.markdown("### Attempt history")
-    topic_runs = fetch_topic_runs_for_review(selected_topic_id)
-    if not topic_runs:
-        st.info("No runs found for this topic yet.")
-        return
-
-    run_ids = [row.get("run_id") for row in topic_runs if row.get("run_id")]
-    selected_run_id = st.selectbox(
-        "Run",
-        options=run_ids,
-        format_func=lambda rid: _format_run_option(next((row for row in topic_runs if row.get("run_id") == rid), {"run_id": rid})),
-    )
-    payloads = load_review_payloads(selected_run_id)
-    render_review_payloads(payloads)
-
-
-def persist_mission_draft_to_supabase(run_state: Dict[str, Any], topic_id: str, answers_doc: Dict[str, Any]) -> None:
-    """Persist draft answers durably so Streamlit sleep does not wipe work."""
-    try:
-        upsert_artifact(
-            run_id=run_state["run_id"],
-            artifact_type="answers",
-            topic_id=topic_id,
-            payload=answers_doc,
-        )
-        append_event(
-            event_type="answers_saved",
-            run_id=run_state["run_id"],
-            topic_id=topic_id,
-            payload={"answer_count": len(answers_doc.get("answers", [])), "source": "mission_tab_save"},
-        )
+        write_log(run_id, f"Stale active run abandoned automatically for completed topic {topic_id}.")
     except Exception:
         pass
-
-
-
-
-def persist_practice_submission_to_supabase(
-    run_state: Dict[str, Any],
-    topic_id: str,
-    practice_submission: Dict[str, Any],
-    practice_result: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Persist Code Lab work durably so Streamlit sleep does not wipe it."""
     try:
-        upsert_artifact(
-            run_id=run_state["run_id"],
-            artifact_type="practice_submission",
+        upsert_run(
+            run_id=run_id,
             topic_id=topic_id,
-            payload=practice_submission,
+            topic_title=str(active_state.get("topic_name") or topic_id),
+            phase="abandoned_stale_run",
+            status="abandoned",
+            run_state=active_state,
         )
-        if practice_result is not None:
-            upsert_artifact(
-                run_id=run_state["run_id"],
-                artifact_type="practice_result",
-                topic_id=topic_id,
-                payload=practice_result,
-            )
         append_event(
-            event_type="practice_submission_saved",
-            run_id=run_state["run_id"],
+            event_type="stale_active_run_auto_abandoned",
+            run_id=run_id,
             topic_id=topic_id,
             payload={
-                "exercise_id": practice_submission.get("exercise_id"),
-                "has_result": practice_result is not None,
+                "reason": "Active local run topic is already completed in durable progress.",
+                "source": "src.start_lesson",
             },
         )
     except Exception:
         pass
 
-def _runtime_task_meta(learning_design: Optional[Dict[str, Any]], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    return runtime_task_for_question(
-        learning_design,
-        str(item.get("question_id", "")),
-        str(item.get("question", "")),
+
+# -----------------------------
+# Deterministic fallbacks
+# -----------------------------
+def build_fallback_concept_note(topic: Topic) -> ConceptNote:
+    title_lower = topic.title.lower()
+    return ConceptNote(
+        topic_id=topic.topic_id,
+        title=topic.title,
+        simple_explanation=(
+            f"{topic.title} is a core ML concept that helps decide whether a model is learning useful patterns "
+            "or merely looking good in a narrow test setup. For V1, treat this as a practical system-design idea, "
+            "not a textbook definition."
+        ),
+        wrong_mental_model=(
+            f"A weak mental model is to treat {title_lower} as a theory term that only matters during model training."
+        ),
+        correct_mental_model=(
+            f"A stronger mental model is to use {title_lower} as a decision tool for model design, validation, "
+            "monitoring, and production risk control."
+        ),
+        tiny_example=(
+            "In a manufacturing defect model, a metric or design choice may look acceptable offline, but the model can still "
+            "fail when production conditions shift. The concept helps identify that gap before deployment."
+        ),
+        why_it_matters=(
+            "If this concept is misunderstood, the team may ship a model that appears acceptable in evaluation but fails "
+            "when data, process behavior, or operating conditions change."
+        ),
+        edge_case=(
+            "A production line receives unseen input patterns after a machine setting changes, and the model continues making "
+            "confident predictions without triggering a monitoring or fallback path."
+        ),
+        three_takeaways=[
+            f"{topic.title} should be understood through system behavior, not memorized as a definition.",
+            "A model can look useful offline and still fail when production conditions differ.",
+            "Architect-level reasoning connects the concept to validation, monitoring, and fallback design.",
+        ],
     )
 
 
-def filter_assessment_doc_for_v3(topic_id: str, assessment_doc: Dict[str, Any]) -> Dict[str, Any]:
-    """Return the assessment contract that should be visible/evaluated in V3.
-
-    Existing active runs can contain old 4-5 essay questions. V3 normal lessons
-    deliberately expose only one short written response. The same filtered
-    contract must be used by the bridge, draft guardrail, and evaluator.
-    """
-    doc = dict(assessment_doc or {})
-    doc["questions"] = filter_assessment_questions(topic_id, doc.get("questions", []) or [])
-    return doc
-
-
-def trim_draft_verification_for_v3(topic_id: str, verification: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Hide stale guardrail findings for old essay tasks no longer visible in V3."""
-    if not verification:
-        return verification
-    items = list(verification.get("items", []) or [])
-    limit = written_task_limit(topic_id)
-    if len(items) <= limit:
-        return verification
-
-    trimmed = dict(verification)
-    visible_items = items[:limit]
-    trimmed["items"] = visible_items
-    summary = dict(trimmed.get("summary", {}) or {})
-    weak_count = sum(
-        1
-        for item in visible_items
-        if (item.get("misconceptions") or item.get("coverage_gaps"))
-    )
-    summary["weak_count"] = weak_count
-    summary["responses_checked"] = len(visible_items)
-    summary["v3_hidden_old_tasks"] = len(items) - len(visible_items)
-    if weak_count:
-        summary["recommendation"] = "Fix the visible V3 written response before submitting."
-    else:
-        summary["recommendation"] = "Visible V3 written response has no blocking issue. Old hidden essay tasks are ignored."
-    trimmed["summary"] = summary
-    return trimmed
-
-
-def render_answer_pressure(question_type: str, answer_text: str, task_meta: Optional[Dict[str, Any]] = None) -> None:
-    words = len((answer_text or "").split())
-    minimum = int((task_meta or {}).get("target_min_words", 45))
-    maximum = int((task_meta or {}).get("target_max_words", 105))
-    shape = str((task_meta or {}).get("response_shape", "Answer the exact question directly and show your reasoning."))
-    if words == 0:
-        st.caption(f"Response shape: {shape} Target: {minimum}-{maximum} words.")
-        return
-    if words > maximum + 30:
-        st.warning(f"{words} words. The evidence needed here should fit in {minimum}-{maximum} words. Cut repetition.")
-    elif words > maximum:
-        st.caption(f"{words} words. Slightly long for this evidence task; tighten repeated explanation.")
-    elif words < minimum:
-        st.caption(f"{words} words. Check that you demonstrated: {shape}")
-    else:
-        st.caption(f"{words} words. Within the range for this evidence task.")
-
-
-def render_writing_assist_panel(question_type: str, answer_text: str, task_meta: Optional[Dict[str, Any]] = None) -> None:
-    """Low-risk language assist. It must not become a hidden scoring rubric."""
-    analysis = analyze_answer_text(answer_text, question_type)
-    if not answer_text:
-        return
-
-    minimum = int((task_meta or {}).get("target_min_words", analysis.get("target_min", 45)))
-    maximum = int((task_meta or {}).get("target_max_words", analysis.get("target_max", 105)))
-    word_count = analysis.get("word_count", 0)
-
-    with st.expander("Writing assist . language and technical precision", expanded=analysis.get("has_language_noise", False)):
-        if minimum <= word_count <= maximum:
-            st.success(f"Length: {word_count} words. Suggested range for this task: {minimum}-{maximum}.")
-        elif word_count > maximum:
-            st.warning(f"Length: {word_count} words. Suggested range for this task: {minimum}-{maximum}. Remove repeated explanation, not necessary evidence.")
-        else:
-            st.info(f"Length: {word_count} words. Suggested range for this task: {minimum}-{maximum}. Check whether the required reasoning is present.")
-
-        suggestions = analysis.get("spelling_suggestions", []) or []
-        if suggestions:
-            st.markdown("**Possible spelling fixes**")
-            for item in suggestions:
-                st.markdown(f"- `{item.get('original')}` → `{item.get('suggestion')}`")
-        else:
-            st.caption("No common spelling hints detected.")
-
-        hints = analysis.get("technical_precision_hints", []) or []
-        if hints:
-            st.markdown("**Technical wording hints**")
-            for hint in hints:
-                st.info(str(hint))
-
-        st.caption("Length is guidance only. Evaluation should score the reasoning demonstrated for this task, not vocabulary or essay size.")
-
-
-def load_relative_json_or_none(relative_path: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not relative_path:
-        return None
-    path = PROJECT_ROOT / relative_path
-    if not path.exists():
-        return None
-    try:
-        data = load_json(path)
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
-
-
-def render_practice_result_summary(result: Dict[str, Any]) -> None:
-    summary = result.get("summary", {}) or {}
-    if summary.get("passed"):
-        st.success(
-            f"Code tests passed: {summary.get('total_passed', 0)}/{summary.get('total_tests', 0)}."
-        )
-    else:
-        st.error(
-            f"Code tests not cleared: {summary.get('total_passed', 0)}/{summary.get('total_tests', 0)}."
-        )
-        if result.get("error"):
-            st.code(result.get("error"))
-
-    diagnostics = result.get("diagnostics", {}) or {}
-    failed_categories = diagnostics.get("failed_categories", []) or []
-    diagnostic_hints = diagnostics.get("hints", []) or []
-    if failed_categories:
-        st.markdown("**Failed skill areas**")
-        for category in failed_categories:
-            st.warning(str(category))
-    if diagnostic_hints:
-        st.markdown("**Debug hints**")
-        for hint in diagnostic_hints:
-            st.info(str(hint))
-
-    visible_rows = []
-    for item in result.get("visible_tests", []) or []:
-        row = {
-            "test": item.get("name"),
-            "passed": item.get("passed"),
-            "scenario": item.get("scenario") or item.get("reason"),
-            "skill": item.get("concept_tag") or item.get("failure_category"),
-            "hint_if_failed": "" if item.get("passed") else item.get("failure_hint", ""),
-        }
-        if item.get("show_expected", True):
-            row["expected"] = item.get("expected")
-        if item.get("show_actual", True):
-            row["actual"] = item.get("actual")
-        if not item.get("passed") and item.get("error"):
-            row["error"] = item.get("error")
-        visible_rows.append(row)
-
-    if visible_rows:
-        st.markdown("**Visible test results**")
-        st.dataframe(visible_rows, use_container_width=True)
-
-    hidden_total = summary.get("hidden_total", 0)
-    if hidden_total:
-        hidden_rows = []
-        for idx, item in enumerate(result.get("hidden_tests", []) or [], start=1):
-            hidden_rows.append(
-                {
-                    "hidden_test": idx,
-                    "passed": item.get("passed"),
-                    "failed_skill": "" if item.get("passed") else (item.get("failure_category") or item.get("concept_tag")),
-                    "diagnostic_hint": "" if item.get("passed") else item.get("failure_hint", ""),
-                }
-            )
-        st.markdown("**Hidden diagnostic results**")
-        st.caption(
-            "Hidden tests do not reveal inputs, expected outputs, or final answers. They show the failed skill area only."
-        )
-        st.dataframe(hidden_rows, use_container_width=True)
-
-    interpretation = result.get("interpretation", {}) or {}
-    st.markdown("**Interpretation check**")
-    st.write(f"Score: {interpretation.get('score', '-')}/5")
-    missing = interpretation.get("missing_focus", []) or []
-    if missing:
-        st.warning("Missing interpretation focus: " + ", ".join(str(item) for item in missing))
-
-
-# -----------------------------
-# Action output and run diagnostics
-# -----------------------------
-def record_action_result(action: str, ok: bool, output: str) -> None:
-    st.session_state["last_action"] = action
-    st.session_state["last_action_ok"] = ok
-    st.session_state["last_action_output"] = output or "No output returned."
-
-
-def render_last_action_result() -> None:
-    if "last_action_output" not in st.session_state:
-        return
-
-    ok = bool(st.session_state.get("last_action_ok", False))
-    action = st.session_state.get("last_action", "Last action")
-    output = st.session_state.get("last_action_output", "")
-
-    with st.expander(f"Last Action Output . {action}", expanded=not ok):
-        if ok:
-            st.success(f"{action} completed.")
-        else:
-            st.error(f"{action} failed.")
-        st.code(output)
-
-
-def list_run_dirs() -> List[Path]:
-    if not RUNS_DIR.exists():
-        return []
-    return sorted(
-        [p for p in RUNS_DIR.iterdir() if p.is_dir() and (p / "run_state.json").exists()],
-        key=lambda p: p.name,
-        reverse=True,
-    )
-
-
-def load_json_or_none(path: Path) -> Optional[Dict[str, Any]]:
-    if not path.exists():
-        return None
-    try:
-        return load_json(path)
-    except Exception:
-        return None
-
-
-def load_text_or_empty(path: Path) -> str:
-    if not path.exists():
-        return ""
-    try:
-        return load_text(path)
-    except Exception as exc:
-        return f"Could not read {path.name}: {exc}"
-
-
-def render_json_file(label: str, path: Path) -> None:
-    data = load_json_or_none(path)
-    with st.expander(label, expanded=False):
-        if data is None:
-            st.info(f"Missing or unreadable: {path}")
-        else:
-            st.json(data)
-
-
-def render_text_file(label: str, path: Path) -> None:
-    text = load_text_or_empty(path)
-    with st.expander(label, expanded=False):
-        if not text:
-            st.info(f"Missing or empty: {path}")
-        else:
-            st.code(text)
-
-
-def render_run_details() -> None:
-    run_dirs = list_run_dirs()
-    if not run_dirs:
-        st.info("No run directories found yet.")
-        return
-
-    options = [p.name for p in run_dirs]
-    selected_name = st.selectbox("Select run", options=options, index=0)
-    run_dir = RUNS_DIR / selected_name
-
-    state = load_json_or_none(run_dir / "run_state.json") or {}
-    phase = state.get("phase", "unknown")
-    status = state.get("status", "unknown")
-    topic = state.get("topic_id", "unknown")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Run", selected_name)
-    c2.metric("Topic", topic)
-    c3.metric("Phase", phase)
-    c4.metric("Status", status)
-
-    st.markdown("### Run Files")
-    render_json_file("run_state.json", run_dir / "run_state.json")
-    render_text_file("logs.txt", run_dir / "logs.txt")
-    render_json_file("selected_topic.json", run_dir / "selected_topic.json")
-    render_json_file("concept_note.json", run_dir / "concept_note.json")
-    render_json_file("architect_note.json", run_dir / "architect_note.json")
-    render_json_file("assessment.json", run_dir / "assessment.json")
-    render_json_file("answers.json", run_dir / "answers.json")
-    render_json_file("evaluation.json", run_dir / "evaluation.json")
-    render_json_file("answer_coaching.json", run_dir / "answer_coaching.json")
-    render_json_file("rewards.json", run_dir / "rewards.json")
-
-
-
-# -----------------------------
-# Metrics and gamification
-# -----------------------------
-def to_int(value: Any) -> Optional[int]:
-    try:
-        if value is None or str(value).strip() == "":
-            return None
-        return int(value)
-    except Exception:
-        return None
-
-
-def compute_topic_average_score(row: Dict[str, str]) -> Optional[float]:
-    score_fields = [
-        "last_score_conceptual",
-        "last_score_practical",
-        "last_score_architect",
-        "last_score_communication",
-    ]
-    values = [to_int(row.get(field)) for field in score_fields]
-    values = [v for v in values if v is not None]
-
-    if not values:
-        return None
-
-    return sum(values) / len(values)
-
-
-def star_string(avg_score: Optional[float]) -> str:
-    if avg_score is None:
-        return "☆☆☆☆☆"
-
-    filled = max(0, min(5, round(avg_score)))
-    return "★" * filled + "☆" * (5 - filled)
-
-
-def status_chip(status: str) -> str:
-    mapping = {
-        "locked": "🔒 Locked",
-        "not_started": "🟦 Unlocked",
-        "unlocked": "🟦 Unlocked",
-        "needs_attention": "🟥 Needs Attention",
-        "in_progress": "🟨 In Progress",
-        "completed": "🟩 Mastered",
-        "borderline": "🟧 Borderline",
-        "revise": "🟥 Revise",
-    }
-    return mapping.get(status, status)
-
-
-def _int_or_none(value: Any) -> Optional[int]:
-    value = str(value or "").strip()
-    if not value:
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
-
-
-def topic_needs_attention(row: Dict[str, str], rewards_state: Optional[Dict[str, Any]] = None) -> bool:
-    """Flag completed or revised topics where the learner should revisit the skill.
-
-    Needs Attention should not mean only current status='revise'. A completed
-    2-star/borderline lesson with practical=2 still needs attention.
-    """
-    status = v23_display_status(row, rewards_state)
-    if status == "needs_attention":
-        return True
-    if status not in {"completed", "borderline"}:
-        return False
-
-    score_fields = [
-        "last_score_conceptual",
-        "last_score_practical",
-        "last_score_architect",
-        "last_score_communication",
-        "last_score_coding",
-    ]
-    scores = [_int_or_none(row.get(field)) for field in score_fields]
-    present_scores = [score for score in scores if score is not None]
-    if any(score < 3 for score in present_scores):
-        return True
-
-    if rewards_state:
-        topic_reward = get_topic_reward_state(rewards_state, row.get("topic_id", ""))
-        best_stars = topic_reward.get("best_stars")
-        if isinstance(best_stars, int) and 0 < best_stars < 3:
-            return True
-
-    return False
-
-
-def compute_overall_metrics(progress_rows: List[Dict[str, str]], rewards_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    completed = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) == "completed")
-    borderline = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) == "borderline")
-    revise = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) in {"revise", "needs_attention"})
-    needs_attention_rows = [row for row in progress_rows if topic_needs_attention(row, rewards_state)]
-    unlocked = sum(
-        1
-        for row in progress_rows
-        if row.get("prerequisites_unlocked", "").lower() == "true"
-        and v23_display_status(row, rewards_state) != "completed"
-    )
-    locked = sum(1 for row in progress_rows if v23_display_status(row, rewards_state) == "locked")
-
-    all_scores = []
-    for row in progress_rows:
-        avg = compute_topic_average_score(row)
-        if avg is not None:
-            all_scores.append(avg)
-
-    overall_avg = round(sum(all_scores) / len(all_scores), 2) if all_scores else None
-
-    return {
-        "completed": completed,
-        "borderline": borderline,
-        "revise": revise,
-        "needs_attention": len(needs_attention_rows),
-        "needs_attention_topics": [row.get("topic_id") for row in needs_attention_rows],
-        "unlocked": unlocked,
-        "locked": locked,
-        "overall_avg": overall_avg,
-    }
-
-def compute_display_stars(row: Dict[str, str], rewards_state: Dict[str, Any]) -> str:
-    topic_reward = get_topic_reward_state(rewards_state, row["topic_id"])
-    best_stars = topic_reward.get("best_stars")
-    if isinstance(best_stars, int) and best_stars > 0:
-        return "★" * best_stars + "☆" * (5 - best_stars)
-
-    avg_score = compute_topic_average_score(row)
-    return star_string(avg_score)
-
-
-def badge_label_for_topic(row: Dict[str, str], rewards_state: Dict[str, Any]) -> str:
-    topic_reward = get_topic_reward_state(rewards_state, row["topic_id"])
-    last_badges = topic_reward.get("last_badges", [])
-
-    if row["status"] == "locked":
-        return "🔒 Locked"
-    if last_badges:
-        return f"🏅 {last_badges[-1]}"
-
-    avg_score = compute_topic_average_score(row)
-    if avg_score is None:
-        return "🟦 Available"
-    if avg_score >= 4.5:
-        return "💎 Diamond"
-    if avg_score >= 4.0:
-        return "🥇 Gold"
-    if avg_score >= 3.0:
-        return "🥈 Silver"
-    if avg_score >= 2.0:
-        return "🥉 Bronze"
-    return "🪨 Starter"
-
-
-def badge_to_label(badge: Any) -> str:
-    if isinstance(badge, dict):
-        return str(badge.get("label") or badge.get("id") or "").strip()
-    return str(badge or "").strip()
-
-
-def badge_to_description(badge: Any) -> str:
-    if isinstance(badge, dict):
-        return str(badge.get("description") or "").strip()
-    return ""
-
-
-def flatten_badges(badges: Any) -> str:
-    if not badges:
-        return ""
-    if isinstance(badges, dict):
-        badges = [badges]
-    if not isinstance(badges, list):
-        return str(badges)
-    labels = [badge_to_label(item) for item in badges]
-    return ", ".join(label for label in labels if label)
-
-
-def reward_history_display_rows(reward_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for item in reward_history:
-        rows.append(
-            {
-                "run_id": item.get("run_id"),
-                "topic_id": item.get("topic_id"),
-                "topic_title": item.get("topic_title"),
-                "decision": item.get("decision"),
-                "completed": item.get("completed", item.get("decision") in {"pass", "borderline"}),
-                "xp_earned": item.get("xp_earned"),
-                "total_xp": item.get("total_xp"),
-                "stars_earned": item.get("stars_earned"),
-                "best_stars": item.get("best_stars"),
-                "badges_awarded": flatten_badges(item.get("badges_awarded", [])),
-                "current_streak": item.get("current_completion_streak"),
-                "best_streak": item.get("best_completion_streak"),
-            }
-        )
-    return rows
-
-
-# -----------------------------
-# Notes lookup
-# -----------------------------
-def find_note_file(folder: Path, topic_id: str) -> Optional[Path]:
-    if not folder.exists():
-        return None
-
-    candidates = sorted(folder.glob(f"{topic_id}*"))
-    return candidates[0] if candidates else None
-
-
-# -----------------------------
-# UI render helpers
-# -----------------------------
-def render_score_cards(evaluation: Dict[str, Any]) -> None:
-    scores = evaluation.get("scores", {})
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Conceptual", scores.get("conceptual_clarity", "-"))
-    c2.metric("Practical", scores.get("practical_reasoning", "-"))
-    c3.metric("Architect", scores.get("architect_reasoning", "-"))
-    c4.metric("Communication", scores.get("communication", "-"))
-
-def render_answer_coaching_panel(run_dir: Path) -> None:
-    coaching_path = run_dir / "answer_coaching.json"
-
-    if not coaching_path.exists():
-        st.info("No question-level answer coaching found for this run. Re-evaluate a lesson to generate it.")
-        return
-
-    answer_coaching = load_json(coaching_path)
-    coaching_items = answer_coaching.get("coaching", [])
-
-    if not coaching_items:
-        st.info("No answer coaching entries found.")
-        return
-
-    st.markdown("### Coaching by Question")
-    st.caption("Better answers are shown only after final evaluation. They are samples for learning, not text to resubmit unchanged.")
-
-    for item in coaching_items:
-        qid = item.get("question_id", "")
-        question = item.get("question", "")
-        quality = item.get("answer_quality", "partial")
-
-        with st.expander(f"{qid} . {quality.upper()} . {question}", expanded=False):
-            st.markdown("**Your Answer**")
-            st.write(item.get("your_answer", ""))
-
-            findings = item.get("evidence_bound_findings", []) or []
-            if findings:
-                st.markdown("**Evidence-bound Findings**")
-                for finding in findings:
-                    st.warning(
-                        f"Evidence: `{finding.get('evidence', '')}`  \n"
-                        f"Issue: {finding.get('issue', '')}  \n"
-                        f"Correction: {finding.get('correction', '')}"
-                    )
-
-            st.markdown("**What Was Missing**")
-            missing_items = item.get("what_was_missing", [])
-            if missing_items:
-                for missing in missing_items:
-                    st.markdown(f"- {missing}")
-            else:
-                st.write("-")
-
-            with st.expander("Show stronger sample answer", expanded=False):
-                st.success(item.get("better_answer", ""))
-
-            st.markdown("**Why This Is Better**")
-            st.write(item.get("why_this_is_better", ""))
-
-            st.markdown("**Architect Upgrade**")
-            st.info(item.get("architect_upgrade", ""))
-
-
-def render_draft_verification_panel(verification: Dict[str, Any]) -> None:
-    summary = verification.get("summary", {})
-    is_guardrail = str(verification.get("mode", "")).startswith("evidence_guardrail")
-
-    st.markdown("### Draft Guardrail" if is_guardrail else "### Draft Verification")
-    if is_guardrail:
-        st.caption("This checks for empty responses and known technical/unsafe claims. It does not predict stars or reward keywords.")
-        c1, c2 = st.columns(2)
-        c1.metric("Blocking Issues", summary.get("weak_count", 0))
-        c2.metric("Responses Checked", len(verification.get("items", []) or []))
-    else:
-        st.caption("This is copy-safe guidance. It gives gaps and next actions, not final answers.")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Readiness Avg", summary.get("readiness_average", summary.get("likely_average", "-")))
-        c2.metric("Weak Drafts", summary.get("weak_count", "-"))
-        c3.metric("Partial Drafts", summary.get("partial_count", "-"))
-        st.caption("Readiness Avg is not a star prediction. Final scoring may be stricter after full evaluation.")
-
-    recommendation = summary.get("recommendation", "")
-    if summary.get("weak_count", 0):
-        st.error(recommendation)
-    elif is_guardrail:
-        st.success(recommendation)
-    elif summary.get("partial_count", 0):
-        st.warning(recommendation)
-    else:
-        st.success(recommendation)
-
-    for item in verification.get("items", []) or []:
-        task = item.get("evidence_task", {}) or {}
-        title = task.get("label", item.get("question_id", ""))
-        issue_count = len(item.get("misconceptions", []) or []) + len(item.get("coverage_gaps", []) or [])
-        exp_label = f"{item.get('question_id', '')} . {title}" + (f" . {issue_count} issue(s)" if issue_count else " . no blocking issue detected")
-        with st.expander(exp_label, expanded=issue_count > 0):
-            st.markdown("**Question**")
-            st.write(item.get("question", ""))
-            if task.get("response_shape"):
-                st.caption("Evidence shape: " + str(task.get("response_shape")))
-
-            misconceptions = item.get("misconceptions", []) or []
-            if misconceptions:
-                st.markdown("**Technical or unsafe claim to fix**")
-                for finding in misconceptions:
-                    st.warning(
-                        f"Evidence: `{finding.get('evidence', '')}`  \n"
-                        f"Issue: {finding.get('issue', '')}  \n"
-                        f"Correction: {finding.get('correction', '')}"
-                    )
-
-            gaps = item.get("coverage_gaps", []) or []
-            if gaps:
-                st.markdown("**Action needed**")
-                for gap in gaps:
-                    st.markdown(f"- {gap}")
-
-            writing = item.get("writing_assist", {}) or {}
-            suggestions = writing.get("spelling_suggestions", []) or []
-            hints = writing.get("technical_precision_hints", []) or []
-            if suggestions or hints:
-                st.markdown("**Language and precision assist**")
-                for sug in suggestions[:5]:
-                    st.markdown(f"- `{sug.get('original')}` → `{sug.get('suggestion')}`")
-                for hint in hints[:3]:
-                    st.info(str(hint))
-
-            if not is_guardrail:
-                st.markdown("**Next improvement**")
-                st.info(item.get("next_improvement", ""))
-
-
-
-
-
-def html_text(value: Any) -> str:
-    return escape(str(value or ""))
-
-
-def html_list(items: Any) -> str:
-    if not items:
-        return ""
-    if not isinstance(items, list):
-        items = [items]
-    lis = "".join(f"<li>{html_text(item)}</li>" for item in items if str(item or "").strip())
-    return f"<ul>{lis}</ul>" if lis else ""
-
-
-def render_static_card(title: str, body: Any, css_class: str = "") -> None:
-    content = ""
-    if isinstance(body, list):
-        content = html_list(body)
-    else:
-        content = f"<p>{html_text(body)}</p>" if str(body or "").strip() else "<p class='small-muted'>Not available.</p>"
-    st.markdown(
-        f"""
-        <div class="section-card {css_class}">
-            <h4>{html_text(title)}</h4>
-            {content}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_topic_hero(run_state: Dict[str, Any], concept_note: Dict[str, Any], mission_types: List[str]) -> None:
-    mission_chips = "".join(
-        f"<span class='status-pill'>{html_text(item.replace('_', ' ').title())}</span>"
-        for item in mission_types
-    )
-    st.markdown(
-        f"""
-        <div class="current-topic-hero">
-            <div class="topic-kicker">{html_text(run_state.get('topic_id'))} . Current Level</div>
-            <div class="topic-heading">{html_text(concept_note.get('title'))}</div>
-            <div class="topic-subline">Complete the flow left to right: learn, bridge the concept to missions, check understanding, write and verify drafts, run practical work, then submit.</div>
-            <div class="workflow-strip">
-                <span class="workflow-step">1 Learn</span>
-                <span class="workflow-step">2 Check It</span>
-                <span class="workflow-step">3 Scored MCQs</span>
-                <span class="workflow-step">4 Evidence + Verify</span>
-                <span class="workflow-step">5 Code Lab</span>
-                <span class="workflow-step">6 Submit</span>
-            </div>
-            <div class="status-strip">{mission_chips}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_learning_brief(concept_note: Dict[str, Any], architect_note: Dict[str, Any]) -> None:
-    st.markdown("### Learning Brief")
-    st.caption("Read this first. The mission answers should reuse the logic, not copy the wording.")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Concept", concept_note.get("simple_explanation", ""))
-    with c2:
-        render_static_card("Tiny Example", concept_note.get("tiny_example", ""))
-
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Wrong Mental Model", concept_note.get("wrong_mental_model", ""), "callout-risk")
-    with c2:
-        render_static_card("Correct Mental Model", concept_note.get("correct_mental_model", ""), "callout-good")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Why It Matters", concept_note.get("why_it_matters", ""))
-    with c2:
-        render_static_card("Edge Case", concept_note.get("edge_case", ""))
-
-    render_static_card("Three Takeaways", concept_note.get("three_takeaways", []))
-
-    st.markdown("### Architect Lens")
-    render_static_card("Architect Summary", architect_note.get("architect_summary", ""))
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Design Implications", architect_note.get("design_implications", []))
-    with c2:
-        render_static_card("Production Risks", architect_note.get("production_risks", []), "callout-risk")
-    c1, c2 = st.columns(2)
-    with c1:
-        render_static_card("Common Mistakes", architect_note.get("common_mistakes", []))
-    with c2:
-        render_static_card("Interview Framing", architect_note.get("interview_framing", ""))
-
-
-
-def render_topic_resources_panel(topic_id: str) -> None:
-    """Show optional, Supabase-managed learning resources without making them assessment prerequisites."""
-    resources = fetch_topic_resources(topic_id)
-    if not resources:
-        return
-
-    with st.expander("Learn Further . Optional resources", expanded=False):
-        st.caption("Use these when the in-app explanation is not enough. These links are optional and are not hidden assessment requirements.")
-        for item in resources:
-            rtype = str(item.get("resource_type", "resource")).replace("_", " ").title()
-            primary = " · Recommended first" if item.get("is_primary") else ""
-            minutes = item.get("estimated_minutes")
-            time_note = f" · approx. {minutes} min" if minutes else ""
-            st.markdown(f"**{rtype}{primary}**{time_note}")
-            st.markdown(f"[{item.get('title', 'Open resource')}]({item.get('url', '')}) · {item.get('provider', '')}")
-            if item.get("purpose"):
-                st.caption(str(item.get("purpose")))
-            st.divider()
-
-
-
-def load_topic_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
-    """Supabase-authored design first; bundled design is a deploy-safe fallback.
-
-    V2.3 enhances shallow designs at runtime so tutor depth matches assessment depth.
-    """
-    return enhance_learning_design(fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id))
-
-
-def render_learning_design_panel(topic_id: str) -> bool:
-    design = load_topic_learning_design(topic_id)
-    if not design:
-        return False
-
-    st.markdown("### Learn")
-    st.caption("Built from the learning objective first. Assessment asks only for the evidence taught here.")
-    render_static_card("By the end of this lesson, you should be able to", design.get("learning_objective", ""), "callout-good")
-
-    prerequisite = str(design.get("prerequisite_bridge", "")).strip()
-    if prerequisite:
-        with st.expander("Before this concept . quick bridge", expanded=False):
-            st.write(prerequisite)
-
-    st.markdown("#### Build the idea")
-    for idx, step in enumerate(design.get("concept_steps", []) or [], start=1):
-        render_static_card(f"{idx}. {step.get('heading', 'Step')}", step.get("body", ""))
-
-    concept_map = design.get("concept_map", []) or []
-    if concept_map:
-        st.markdown("#### Concept map")
-        st.caption("Use this to separate terms that are easy to confuse.")
-        st.dataframe(concept_map, use_container_width=True, hide_index=True)
-
-    example = design.get("worked_example", {}) or {}
-    if example:
-        st.markdown("#### Worked example")
-        render_static_card("Scenario", example.get("scenario", ""), "callout-good")
-        rows = example.get("rows", []) or []
-        if rows:
-            st.dataframe(rows, use_container_width=True, hide_index=True)
-        if example.get("takeaway"):
-            st.info(str(example.get("takeaway")))
-
-    more_examples = design.get("worked_examples", []) or []
-    if more_examples:
-        st.markdown("#### Work through it")
-        st.caption("These are concept walkthroughs and example answers. They are not generic answer templates.")
-        for example_idx, extra in enumerate(more_examples, start=1):
-            title = extra.get('title') or extra.get('label') or 'Worked example'
-            with st.expander(f"Worked example {example_idx}: {title}", expanded=example_idx == 1):
-                if extra.get("scenario"):
-                    render_static_card("Scenario", extra.get("scenario"), "callout-good")
-                if extra.get("body"):
-                    st.write(extra.get("body"))
-                rows = extra.get("rows", []) or []
-                if rows:
-                    st.dataframe(rows, use_container_width=True, hide_index=True)
-                if extra.get("calculation"):
-                    render_static_card("Calculation", extra.get("calculation"), "callout-good")
-                if extra.get("interpretation"):
-                    render_static_card("Interpretation", extra.get("interpretation"), "callout-good")
-                steps = extra.get("steps", []) or []
-                if steps:
-                    # Legacy fallback only. V2.4 authored tutor lessons should use body/rows/calculation.
-                    for step_idx, step in enumerate(steps, start=1):
-                        st.markdown(f"**{step_idx}.** {step}")
-
-    code_bridge = design.get("code_bridge", {}) or {}
-    if code_bridge:
-        with st.expander("Code Lab bridge . read before coding", expanded=True):
-            if code_bridge.get("idea"):
-                render_static_card("What the code represents", code_bridge.get("idea"), "callout-good")
-            algorithm = code_bridge.get("algorithm", []) or []
-            if algorithm:
-                st.markdown("**Algorithm in plain English**")
-                for idx, item in enumerate(algorithm, start=1):
-                    st.markdown(f"{idx}. {item}")
-            if code_bridge.get("common_bug"):
-                render_static_card("Common implementation bug", code_bridge.get("common_bug"), "callout-risk")
-
-    repair_prompts = design.get("mastery_repair_prompts", []) or []
-    if repair_prompts:
-        with st.expander("If this still feels weak . repair prompts", expanded=False):
-            for prompt in repair_prompts:
-                st.markdown(f"- {prompt}")
-
-    with st.expander("Common trap and architect extension", expanded=False):
-        if design.get("misconception"):
-            render_static_card("Do not conclude this", design.get("misconception"), "callout-risk")
-        if design.get("architect_extension"):
-            render_static_card("Architect extension", design.get("architect_extension"), "callout-good")
-    return True
-
-
-def render_evidence_task_overview(learning_design: Optional[Dict[str, Any]], assessment_doc: Dict[str, Any]) -> None:
-    if not learning_design:
-        return
-    st.markdown("### Evidence tasks")
-    st.caption("These are different proofs of understanding. They are not five copies of the same essay template.")
-    questions = assessment_doc.get("questions", []) or []
-    for idx, question in enumerate(questions, start=1):
-        meta = runtime_task_for_question(learning_design, str(question.get("question_id", "")), str(question.get("question", "")))
-        if not meta:
-            continue
-        with st.expander(f"Task {idx} . {meta.get('label', question.get('type', 'Evidence'))}", expanded=False):
-            st.write(meta.get("purpose", ""))
-            st.markdown(f"**Response shape:** {meta.get('response_shape', 'Answer directly.')}  ")
-            st.caption(f"Suggested length: {meta.get('target_min_words', 45)}-{meta.get('target_max_words', 105)} words. Length is guidance, not the scoring rule.")
-            focus = meta.get("expected_focus", []) or []
-            if focus:
-                st.markdown("**Evidence this task should reveal:** " + " · ".join(str(x) for x in focus))
-            if meta.get("sample_answer"):
-                with st.expander("See a 3-star sample answer after trying", expanded=False):
-                    st.write(meta.get("sample_answer"))
-            if meta.get("common_weak_answer"):
-                st.caption("Common weak pattern: " + str(meta.get("common_weak_answer")))
-    st.info(str(learning_design.get("assessment_principle", "")))
-
-
-def render_tutor_narrative_panel(topic_id: str) -> bool:
-    """Render one coherent lesson, while moving scoring detail out of the teaching flow."""
-    narrative = get_tutor_narrative(topic_id)
-    if not narrative:
-        return False
-
-    st.markdown("### Expert Tutor Lesson")
-    st.caption("Learn the idea here once. Application and mission requirements are separated into their own tabs.")
-
-    sections = narrative.get("sections", []) or []
-    section_map = {str(section.get("heading", "")): section for section in sections}
-    for heading in ["Start Here: The Intuition", "Slow Walkthrough: What Actually Changes", "Worked Example, Step by Step"]:
-        section = section_map.get(heading)
-        if section:
-            style = str(section.get("style", "normal"))
-            css_class = "callout-good" if style == "good" else "callout-risk" if style == "risk" else ""
-            render_static_card(section.get("heading", "Section"), section.get("body", ""), css_class)
-
-    quick_check = section_map.get("Pause and Check Yourself")
-    if quick_check:
-        render_static_card("Stop and Test Your Understanding", quick_check.get("body", ""), "callout-good")
-
-    deeper_headings = [
-        "Precise Definition",
-        "Why This Concept Exists",
-        "Unsafe vs Safe Pattern",
-        "Nuances You Should Not Miss",
-        "Common Traps",
-        "Architect Translation",
-        "System Design Controls",
-    ]
-    available_deeper = [section_map[h] for h in deeper_headings if h in section_map]
-    if available_deeper:
-        with st.expander("Architect depth and guardrails . Optional before missions", expanded=False):
-            for section in available_deeper:
-                style = str(section.get("style", "normal"))
-                css_class = "callout-good" if style == "good" else "callout-risk" if style == "risk" else ""
-                render_static_card(section.get("heading", "Section"), section.get("body", ""), css_class)
-    return True
-
-
-def render_booster_walkthrough(booster: Dict[str, Any]) -> None:
-    learning_design = booster.get("learning_design") if isinstance(booster, dict) else None
-    st.markdown("### Check It")
-    st.caption("One diagnostic check before assessment. Use it to see whether the central idea has clicked.")
-
-    prompt = booster.get("application_prompt", "")
-    reveal = booster.get("application_reveal", "")
-    if prompt:
-        render_static_card("Think before revealing", prompt, "callout-good")
-        with st.expander("Reveal the reasoning", expanded=False):
-            st.write(reveal)
-    else:
-        render_static_card("Think before proceeding", booster.get("production_trap", ""), "callout-risk")
-
-    if learning_design:
-        st.caption("This check is not scored. The assessed evidence is shown only in the Missions tab.")
-    else:
-        with st.expander("Response scaffold . open only if stuck", expanded=False):
-            answer_frame = booster.get("answer_frame", []) or []
-            if answer_frame:
-                render_static_card("Use this structure", answer_frame)
-
-
-def render_mission_bridge(booster: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
-    learning_design = booster.get("learning_design") if isinstance(booster, dict) else None
-    if learning_design:
-        render_evidence_task_overview(learning_design, assessment_doc)
-        return
-
-    bridge_items = booster.get("mission_bridge", []) or []
-    questions = assessment_doc.get("questions", []) or []
-    if not bridge_items and not questions:
-        return
-    st.markdown("### Mission Requirements")
-    st.caption("Open the requirement for the mission you are answering.")
-    bridge_by_type = {str(item.get("mission_type", "")): item for item in bridge_items if isinstance(item, dict)}
-    for idx, question in enumerate(questions, start=1):
-        qtype = str(question.get("type", "mission"))
-        bridge = bridge_by_type.get(qtype, {})
-        with st.expander(f"Mission {idx} . {qtype.replace('_', ' ').title()}", expanded=False):
-            st.write(bridge.get("tested_skill") or "Apply the concept to the exact scenario.")
-            expected = question.get("expected_focus", []) or []
-            if expected:
-                st.markdown("**Evidence expected:** " + " · ".join(str(item) for item in expected[:4]))
-
-
-def run_draft_verification_action(
-    *,
-    awaiting_run: Path,
-    run_state: Dict[str, Any],
-    topic_id: str,
-    concept_note: Dict[str, Any],
-    architect_note: Dict[str, Any],
-    assessment_doc: Dict[str, Any],
-    answer_path: Path,
-    updated_answers: Dict[str, Any],
-) -> None:
-    save_answers(answer_path, updated_answers)
-    persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
-    effective_assessment_doc = filter_assessment_doc_for_v3(topic_id, assessment_doc)
-    verification = verify_draft_answers(
-        concept_note=build_dataclass(concept_note, ConceptNote),
-        architect_note=build_dataclass(architect_note, ArchitectNote),
-        assessment=build_dataclass(effective_assessment_doc, Assessment),
-        answers_doc=updated_answers,
-    )
-    verification = trim_draft_verification_for_v3(topic_id, verification)
-    save_answers(awaiting_run / "draft_verification.json", verification)
-    try:
-        upsert_artifact(
-            run_id=run_state["run_id"],
-            artifact_type="draft_verification",
-            topic_id=topic_id,
-            payload=verification,
-        )
-        append_event(
-            event_type="draft_verified",
-            run_id=run_state["run_id"],
-            topic_id=topic_id,
-            payload=verification.get("summary", {}),
-        )
-    except Exception:
-        pass
-    st.session_state["draft_verification_run_id"] = run_state["run_id"]
-    st.session_state["draft_verification"] = verification
-
-
-def get_draft_verification_to_show(awaiting_run: Path, run_id: str, topic_id: str = "") -> Optional[Dict[str, Any]]:
-    if st.session_state.get("draft_verification_run_id") == run_id:
-        return trim_draft_verification_for_v3(topic_id, st.session_state.get("draft_verification"))
-    if (awaiting_run / "draft_verification.json").exists():
-        return trim_draft_verification_for_v3(topic_id, load_json(awaiting_run / "draft_verification.json"))
-    return None
-
-
-def _format_mcq_title(kind: str, idx: int, question: str) -> str:
-    kind = str(kind or "Check").strip()
-    prefix = f"Check {idx}" if kind.lower() == "check" else f"{kind} Check {idx}"
-    return f"{prefix}. {question}"
-
-
-def render_pre_mission_mcqs(
-    topic_id: str,
-    booster: Dict[str, Any],
-    awaiting_run: Optional[Path] = None,
-    run_state: Optional[Dict[str, Any]] = None,
-) -> None:
-    seed_context = str((run_state or {}).get("run_id") or topic_id or "active")
-    mcqs = normalize_mcq_items(booster.get("mcqs", []) or [], seed_context=seed_context)
-    contract = explain_contract(topic_id)
-
-    st.markdown("### Scored MCQs")
-    st.caption(contract.get("summary", "MCQs test breadth before the short written response."))
-
-    if not mcqs:
-        st.info("No MCQs configured for this lesson yet.")
-        return
-
-    previous = load_mcq_submission(awaiting_run) if awaiting_run is not None else None
-    previous_selections = (previous or {}).get("selections", {}) if isinstance(previous, dict) else {}
-
-    for idx, item in enumerate(mcqs, start=1):
-        qid = str(item.get("id") or f"mcq_{idx:02d}")
-        qkey = f"{seed_context}_{topic_id}_mcq_{idx}"
-        kind = str(item.get("kind", "Check"))
-        title = _format_mcq_title(kind, idx, str(item.get("question", "")))
-
-        with st.expander(title, expanded=(idx == 1)):
-            options = item.get("options", []) or []
-            option_ids = item.get("option_ids", []) or [f"opt_{i}" for i in range(len(options))]
-            option_text_by_id = {
-                oid: options[i]
-                for i, oid in enumerate(option_ids)
-                if i < len(options)
-            }
-
-            default_value = previous_selections.get(qid)
-            radio_values = [None] + list(option_ids)
-            default_index = radio_values.index(default_value) if default_value in radio_values else 0
-
-            selected = st.radio(
-                label=f"Select answer for check {idx}",
-                options=radio_values,
-                index=default_index,
-                format_func=lambda oid, mapping=option_text_by_id: (
-                    "Select an answer..." if oid is None else mapping.get(oid, str(oid))
+def build_fallback_architect_note(topic: Topic, concept_note: ConceptNote, learner_profile: Dict[str, Any]) -> ArchitectNote:
+    priority_contexts = learner_profile.get("priority_contexts", []) or ["manufacturing_ai"]
+    return ArchitectNote(
+        topic_id=topic.topic_id,
+        architect_summary=(
+            f"For an ML Architect, {topic.title} matters because it influences how the model is evaluated, monitored, "
+            "and trusted after deployment. The concept should translate into concrete controls, not just explanation."
+        ),
+        design_implications=[
+            "Define the validation setup so it reflects the way the model will be used in production.",
+            "Add monitoring and fallback behavior for cases where model inputs or outputs move outside expected patterns.",
+        ],
+        common_mistakes=[
+            "Treating a good offline result as proof that the model is safe for production use.",
+            "Failing to connect the concept to concrete checks, alerts, thresholds, or review actions.",
+        ],
+        production_risks=[
+            "The system may silently make poor predictions when production data changes.",
+            "Teams may over-invest in model complexity without proving that it improves the operational decision.",
+        ],
+        interview_framing=(
+            f"I would explain {topic.title} by linking it to model reliability: how we validate the model, how we monitor it, "
+            "and what guardrails exist when production behavior differs from training or test assumptions."
+        ),
+        use_case_mapping=[
+            UseCaseMapping(
+                context=str(priority_contexts[0]),
+                relevance=(
+                    f"In {priority_contexts[0]}, this concept helps decide whether model behavior is reliable enough "
+                    "for operational use and what controls are needed around it."
                 ),
-                key=qkey,
-                label_visibility="collapsed",
             )
-
-            correct_option_id = str(item.get("correct_option_id") or "")
-            option_explanations = item.get("option_explanations", []) or []
-
-            if st.button(f"Check answer {idx}", key=f"{qkey}_btn", use_container_width=True):
-                if selected is None:
-                    st.warning("Select an answer first.")
-                elif selected == correct_option_id:
-                    st.success("Correct. " + str(item.get("explanation", "")))
-                else:
-                    st.error("Not quite.")
-                    try:
-                        selected_index = option_ids.index(selected)
-                    except Exception:
-                        selected_index = -1
-
-                    if 0 <= selected_index < len(option_explanations) and option_explanations[selected_index]:
-                        st.warning(str(option_explanations[selected_index]))
-                    else:
-                        st.caption("This option misses the topic-specific mechanism. Re-read the tutor narrative and try again.")
-
-                    st.caption("The correct option is intentionally not shown. Fix the reasoning, not the guess.")
-
-    st.divider()
-    st.markdown("#### Save MCQ evidence")
-    st.caption(
-        "These MCQs now count. Save them before final evaluation. V3.5 balances answer positions per run and scores stable option IDs. Answer all displayed MCQs, reach 70%+, and clear critical checks."
+        ],
     )
 
-    if run_state is not None:
-        current_payload = build_mcq_submission_payload(
-            topic_id=topic_id,
-            run_id=run_state["run_id"],
-            mcqs=mcqs,
-            selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
-            seed_context=run_state["run_id"],
+
+def build_fallback_assessment(topic: Topic, concept_note: ConceptNote, architect_note: ArchitectNote) -> Assessment:
+    return Assessment(
+        topic_id=topic.topic_id,
+        questions=[
+            AssessmentQuestion(
+                question_id="q1",
+                type="concept_check",
+                question=f"Explain {topic.title} in simple words without using a textbook definition.",
+                expected_focus=[
+                    "Clear explanation in plain language.",
+                    "Connection to model behavior or evaluation.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q2",
+                type="tiny_hands_on",
+                question=(
+                    "A defect prediction model performs well on historical data but starts missing defects after a machine "
+                    "setting changes. Use this scenario to explain how the concept applies."
+                ),
+                expected_focus=[
+                    "Identifies the gap between historical evaluation and production behavior.",
+                    "Explains what should be checked or redesigned.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q3",
+                type="failure_diagnosis",
+                question=(
+                    "What specific failure could happen in production if this concept is misunderstood by the ML team?"
+                ),
+                expected_focus=[
+                    "Names a concrete failure mechanism.",
+                    "Connects the failure to data, evaluation, monitoring, or deployment assumptions.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q4",
+                type="architect_decision",
+                question=(
+                    "As an ML Architect, what design decision or guardrail would you add because of this concept?"
+                ),
+                expected_focus=[
+                    "Specific design action such as monitoring, fallback, validation split, or threshold.",
+                    "Reason for why that action reduces production risk.",
+                ],
+            ),
+            AssessmentQuestion(
+                question_id="q5",
+                type="teachback",
+                question=(
+                    "Explain this concept to a non-technical stakeholder and include why it matters before deployment."
+                ),
+                expected_focus=[
+                    "Stakeholder-friendly language.",
+                    "Clear business or operational consequence.",
+                ],
+            ),
+        ],
+    )
+
+
+def persist_lesson_start_to_supabase(
+    run_id: str,
+    topic: Topic,
+    final_run_state: RunState | Dict[str, Any],
+    selected,
+    concept_note,
+    architect_note,
+    assessment,
+    answer_template: dict,
+    practice_exercise: dict | None = None,
+    practice_submission_template: dict | None = None,
+) -> None:
+    run_state_payload = final_run_state.to_dict() if hasattr(final_run_state, "to_dict") else dict(final_run_state)
+    upsert_run(
+        run_id=run_id,
+        topic_id=topic.topic_id,
+        topic_title=topic.title,
+        phase=run_state_payload["phase"],
+        status=run_state_payload["status"],
+        run_state=run_state_payload,
+    )
+    upsert_artifact(run_id, "selected_topic", topic.topic_id, payload=selected.to_dict())
+    upsert_artifact(run_id, "concept_note", topic.topic_id, payload=concept_note.to_dict())
+    upsert_artifact(run_id, "architect_note", topic.topic_id, payload=architect_note.to_dict())
+    upsert_artifact(run_id, "assessment", topic.topic_id, payload=assessment.to_dict())
+    upsert_artifact(run_id, "answer_template", topic.topic_id, payload=answer_template)
+    if practice_exercise is not None:
+        upsert_artifact(run_id, "practice_exercise", topic.topic_id, payload=practice_exercise)
+    if practice_submission_template is not None:
+        upsert_artifact(run_id, "practice_submission_template", topic.topic_id, payload=practice_submission_template)
+    append_event(
+        event_type="lesson_started",
+        run_id=run_id,
+        topic_id=topic.topic_id,
+        payload={
+            "selection_mode": selected.selection_mode,
+            "phase": run_state_payload["phase"],
+            "status": run_state_payload["status"],
+        },
+    )
+
+def main() -> None:
+    requested_topic_id = resolve_requested_topic_id()
+
+    active_run = find_active_awaiting_run()
+    if active_run is not None:
+        active_state = load_json(active_run / "run_state.json")
+        completed_topics = _completed_topics_from_progress()
+        if _is_stale_active_run(active_state, completed_topics, requested_topic_id=requested_topic_id):
+            _abandon_stale_active_run(active_run, active_state)
+        else:
+            raise StartLessonError(
+                f"Active lesson already exists: {active_state['run_id']} ({active_state['topic_id']}). "
+                f"Finish active lesson first."
+            )
+
+    learner_profile = load_yaml(CONFIG_DIR / "learner_profile.yaml")
+    topic_catalog = load_topic_catalog()
+    selected = select_topic(requested_topic_id=requested_topic_id)
+    topic = get_topic_by_id(topic_catalog, selected.selected_topic_id)
+    run_id = generate_run_id(topic.topic_id)
+    learning_design = fetch_topic_learning_design(topic.topic_id) or get_bundled_learning_design(topic.topic_id)
+
+    run_state = RunState(
+        run_id=run_id,
+        topic_id=topic.topic_id,
+        topic_name=topic.title,
+        phase="topic_selected",
+        status="in_progress",
+        prerequisites=topic.prerequisites,
+        artifacts=RunArtifacts(),
+        scores=RunScores(),
+        next_action="generate_concept_note",
+    )
+
+    write_json(f"runs/{run_id}/selected_topic.json", selected)
+    write_json(f"runs/{run_id}/run_state.json", run_state)
+    write_log(run_id, f"Lesson started for {topic.topic_id}")
+    write_log(run_id, f"Selection reason: {selected.reason}")
+
+    if learning_design:
+        concept_note = design_to_concept_note(learning_design)
+        architect_note = design_to_architect_note(learning_design)
+        assessment = design_to_assessment(learning_design)
+        teacher_diagnostics = {
+            "status": "topic_specific_learning_design",
+            "design_version": learning_design.get("design_version", "unknown"),
+            "message": "Lesson teaching and assessment are driven by the same published evidence design.",
+        }
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_json(f"runs/{run_id}/learning_design.json", learning_design)
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Lesson generated from topic-specific tutor and evidence design")
+    elif is_checkpoint_topic(topic.topic_id):
+        concept_note = build_checkpoint_concept_note(topic)
+        teacher_diagnostics = {
+            "status": "checkpoint_static_content",
+            "message": "Module checkpoint uses deterministic cross-topic assessment content.",
+        }
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_log(run_id, "Checkpoint concept note generated from deterministic checkpoint bank")
+
+        architect_note = build_checkpoint_architect_note(topic)
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Checkpoint architect note generated from deterministic checkpoint bank")
+
+        assessment = build_checkpoint_assessment(topic)
+        write_log(run_id, "Checkpoint assessment generated from deterministic checkpoint bank")
+    elif has_blueprint(topic.topic_id):
+        concept_note = blueprint_to_concept_note(topic.topic_id)
+        architect_note = blueprint_to_architect_note(topic.topic_id)
+        assessment = blueprint_to_assessment(topic.topic_id)
+        teacher_diagnostics = {
+            "status": "expert_blueprint_static_content",
+            "blueprint_version": blueprint_context(topic.topic_id).get("blueprint_version"),
+            "message": "Advanced ML lesson generated from Expert Tutor Blueprint. Teacher, architect lens, missions, MCQs, verifier, evaluator, and coaching share the same source of truth.",
+        }
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_json(f"runs/{run_id}/lesson_blueprint.json", blueprint_context(topic.topic_id))
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Advanced ML lesson generated from expert tutor blueprint")
+    else:
+        teacher_llm_callable = build_llm_callable("teacher")
+        architect_llm_callable = build_llm_callable("architect_lens")
+        assessor_llm_callable = build_llm_callable("assessor")
+
+        teacher_payload = build_teacher_payload(
+            selected_topic=topic,
+            learner_profile=learner_profile,
+            weak_spots=[],
+        )
+        try:
+            concept_note, teacher_diagnostics = generate_teacher_note_with_quality_loop(
+                teacher_payload,
+                teacher_llm_callable,
+            )
+        except Exception as exc:
+            concept_note = build_fallback_concept_note(topic)
+            teacher_diagnostics = {
+                "status": "fallback_used",
+                "error": str(exc),
+                "message": "Teacher generation failed. Deterministic fallback note was used so the lesson could continue.",
+            }
+            write_log(run_id, f"Teacher generation failed. Fallback concept note used: {exc}")
+
+        write_json(f"runs/{run_id}/concept_note.json", concept_note)
+        write_json(f"runs/{run_id}/teacher_quality_diagnostics.json", teacher_diagnostics)
+        write_markdown(
+            f"notes/concepts/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}.md",
+            concept_note_to_markdown(concept_note),
+        )
+        write_log(
+            run_id,
+            f"Concept note generated with teacher quality status: {teacher_diagnostics['status']}",
         )
 
-        current_result = current_payload.get("result", {})
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Answered", f"{current_result.get('answered', 0)}/{current_result.get('total', 0)}")
-        c2.metric("MCQ Score", f"{current_result.get('score_pct', 0)}%")
-        c3.metric("Gate", "PASS" if current_result.get("passed") else "NOT YET")
-
-        with st.expander("MCQ audit", expanded=False):
-            positions = []
-            for item in mcqs:
-                try:
-                    positions.append(int(item.get("answer_index")))
-                except Exception:
-                    pass
-
-            labels = ["A", "B", "C", "D", "E", "F"]
-            max_options = max([len(item.get("options", [])) for item in mcqs] or [0])
-            distribution = {
-                labels[i]: positions.count(i)
-                for i in range(min(6, max_options))
-            }
-
-            st.caption(f"Correct-answer position distribution for this run: {distribution}")
-
-    if awaiting_run is not None and run_state is not None:
-        if st.button("Save MCQ Answers", use_container_width=True, type="primary"):
-            payload = persist_mcq_submission(
-                awaiting_run=awaiting_run,
-                run_state=run_state,
-                topic_id=topic_id,
-                mcqs=mcqs,
-            )
-
-            result = payload.get("result", {})
-
-            if result.get("passed"):
-                st.success(
-                    f"MCQ gate passed: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%)."
-                )
-            else:
-                st.warning(
-                    f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%)."
-                )
-
-def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
-    booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
-
-    st.markdown("### Study Booster")
-    st.caption("Use this before mission responses. It is a warm-up, not a final answer bank.")
-
-    with st.expander("Tutor walkthrough", expanded=True):
-        st.markdown("**In one line**")
-        st.info(booster.get("plain_language", ""))
-
-        st.markdown("**Worked example**")
-        st.write(booster.get("worked_example", ""))
-
-        st.markdown("**Common production trap**")
-        st.warning(booster.get("production_trap", ""))
-
-        st.markdown("**How to approach the missions**")
-        st.success(booster.get("mission_hint", ""))
-
-        focus = booster.get("mission_focus", []) or []
-        if focus:
-            st.markdown("**What the evaluator will look for**")
-            for item in focus:
-                st.markdown(f"- {item}")
-
-    mcqs = booster.get("mcqs", []) or []
-    if mcqs:
-        with st.expander("Pre-mission multiple choice checks", expanded=True):
-            st.caption("These checks are for learning only. They do not affect score or unlocks.")
-            for idx, item in enumerate(mcqs, start=1):
-                qkey = f"{topic_id}_mcq_{idx}"
-                st.markdown(f"**{_format_mcq_title('Check', idx, str(item.get('question', '')))}**")
-                options = item.get("options", []) or []
-                if not options:
-                    continue
-                selected = st.radio(
-                    label=f"Select answer for check {idx}",
-                    options=list(range(len(options))),
-                    format_func=lambda i, opts=options: opts[i],
-                    key=qkey,
-                    label_visibility="collapsed",
-                )
-                correct_index = int(item.get("answer_index", -1))
-                if st.button(f"Check answer {idx}", key=f"{qkey}_btn"):
-                    if selected == correct_index:
-                        st.success("Correct. " + str(item.get("explanation", "")))
-                    else:
-                        st.error("Not quite. " + str(item.get("explanation", "")))
-                        st.caption("Review the Study Booster, then try again. The correct option is intentionally not shown here.")
-                st.divider()
-
-def render_practice_coaching_panel(run_dir: Path) -> None:
-    result_path = run_dir / "practice_result.json"
-    coaching_path = run_dir / "practice_coaching.json"
-
-    if not result_path.exists() and not coaching_path.exists():
-        return
-
-    st.markdown("### Practical Code Lab Result")
-
-    if result_path.exists():
-        result = load_json(result_path)
-        render_practice_result_summary(result)
-
-    if coaching_path.exists():
-        coaching = load_json(coaching_path)
-        with st.expander("Practical coaching", expanded=False):
-            st.markdown("**What to fix next**")
-            st.write(coaching.get("next_step", ""))
-
-            failed_categories = coaching.get("failed_categories", []) or []
-            if failed_categories:
-                st.markdown("**Failed code skill areas**")
-                for item in failed_categories:
-                    st.markdown(f"- {item}")
-
-            diagnostic_hints = coaching.get("diagnostic_hints", []) or []
-            if diagnostic_hints:
-                st.markdown("**Debug hints without hidden answers**")
-                for item in diagnostic_hints:
-                    st.info(str(item))
-
-            missing = coaching.get("missing_interpretation_focus", []) or []
-            if missing:
-                st.markdown("**Missing interpretation focus**")
-                for item in missing:
-                    st.markdown(f"- {item}")
-
-            st.markdown("**Better code**")
-            st.code(coaching.get("better_code", ""), language="python")
-
-            st.markdown("**Better interpretation**")
-            st.info(coaching.get("better_interpretation", ""))
-
-
-def render_level_card(
-    row: Dict[str, str],
-    selected_topic_id: Optional[str],
-    rewards_state: Dict[str, Any],
-) -> None:
-    topic_id = row["topic_id"]
-    title = row["title"]
-    status = v23_display_status(row, rewards_state)
-    stars = compute_display_stars(row, rewards_state)
-    badge = badge_label_for_topic(row, rewards_state)
-    selected = topic_id == selected_topic_id
-
-    selected_class = " level-card-selected" if selected else ""
-
-    st.markdown(
-        f"""
-        <div class="level-card{selected_class}">
-            <div class="level-id">{topic_id}</div>
-            <div class="level-title">{title}</div>
-            <div class="level-status">{status_chip(status)}</div>
-            <div class="level-stars">{stars}</div>
-            <div class="level-badge">{badge}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def v3_home_group_for_topic(topic_id: str) -> str:
-    tid = str(topic_id or "").strip()
-    if tid.startswith(("aia_", "genai_", "rag_", "llm_", "trf_")):
-        return "agentic"
-    if tid.startswith("mlf_") or tid.startswith("checkpoint_ml_") or tid.startswith("capstone_ml_"):
-        return "ml"
-    if tid.startswith("dl_"):
+        architect_payload = build_architect_lens_payload(
+            selected_topic=topic,
+            concept_note=concept_note,
+            learner_profile=learner_profile,
+        )
         try:
-            number = int(tid.split("_", 1)[1])
-        except Exception:
-            number = 0
-        return "dl" if number and number <= 7 else "nn"
-    return "other"
+            architect_note = generate_architect_note(architect_payload, architect_llm_callable)
+        except Exception as exc:
+            architect_note = build_fallback_architect_note(topic, concept_note, learner_profile)
+            write_log(run_id, f"Architect lens generation failed. Fallback architect note used: {exc}")
 
+        write_json(f"runs/{run_id}/architect_note.json", architect_note)
+        write_markdown(
+            f"notes/architect_lens/{topic.topic_id}_{topic.title.lower().replace(' ', '_')}_architect.md",
+            architect_note_to_markdown(architect_note),
+        )
+        write_log(run_id, "Architect note generated")
 
-V3_HOME_GROUPS = [
-    (
-        "agentic",
-        "🤖 Agentic AI / GenAI Onion Path",
-        "Start from the outer system layer: agents, tool use, RAG, LLM limits and transformer intuition.",
-    ),
-    (
-        "ml",
-        "📊 Machine Learning Repair Queue",
-        "Repair only ML topics below 3-star mastery. Mastered topics remain reviewable but should not block progress.",
-    ),
-    (
-        "dl",
-        "🧠 Deep Learning Foundations",
-        "Neurons, activations, forward pass, losses, gradient descent, backprop and training loops.",
-    ),
-    (
-        "nn",
-        "🕸️ Neural Networks: Regularization and Deployment",
-        "Overfitting, dropout, batch normalization, early stopping and production risks.",
-    ),
-    ("other", "Other", "Additional curriculum items."),
-]
+        assessor_payload = build_assessor_payload(
+            concept_note=concept_note,
+            architect_note=architect_note,
+            learner_profile=learner_profile,
+            weak_spots=[],
+        )
+        try:
+            assessment = generate_assessment(assessor_payload, assessor_llm_callable)
+        except Exception as exc:
+            assessment = build_fallback_assessment(topic, concept_note, architect_note)
+            write_log(run_id, f"Assessment generation failed. Fallback mission set used: {exc}")
 
+    write_json(f"runs/{run_id}/assessment.json", assessment)
 
-def render_topic_action_buttons(row: Dict[str, str], awaiting_run: Optional[Path]) -> None:
-    topic_id = row.get("topic_id", "")
-    status = v23_display_status(row, rewards_state)
-    if status == "completed":
-        action_cols = st.columns(2)
-        with action_cols[0]:
-            if st.button("Review", key=f"review_{topic_id}", use_container_width=True, disabled=not topic_id):
-                st.session_state.review_topic_id = topic_id
-                st.info("Open the Review / Redo tab to inspect this completed topic.")
-        with action_cols[1]:
-            redo_disabled = awaiting_run is not None
-            if st.button("Redo", key=f"redo_{topic_id}", use_container_width=True, disabled=redo_disabled):
-                with st.spinner(f"Starting redo attempt for {topic_id}..."):
-                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=True)
-                record_action_result("Start Redo Attempt", ok, output)
-                if ok:
-                    st.rerun()
-    else:
-        unlocked = str(row.get("prerequisites_unlocked") or "").strip().lower() == "true"
-        if status in {"needs_attention", "revise", "borderline", "unlocked", "not_started"} and unlocked:
-            button_label = "Repair" if status in {"needs_attention", "revise", "borderline"} else "Start"
-            if st.button(button_label, key=f"repair_{topic_id}", use_container_width=True, disabled=awaiting_run is not None):
-                with st.spinner(f"Starting {button_label.lower()} attempt for {topic_id}..."):
-                    ok, output = start_lesson_for_topic(topic_id, allow_completed_restart=False)
-                record_action_result(f"Start {button_label} Attempt", ok, output)
-                if ok:
-                    st.rerun()
-        else:
-            st.caption("Locked until prerequisite mastery gate is met.")
+    question_md_path = f"assessments/questions/{run_id}_questions.md"
+    answer_md_path = f"assessments/answers/{run_id}_answers.md"
+    answer_json_path = f"assessments/answers/{run_id}_answers.json"
 
+    write_markdown(question_md_path, assessment_to_markdown(assessment))
+    write_markdown(answer_md_path, answer_template_to_markdown(assessment))
+    answer_template_payload = answer_template_to_json(assessment)
+    write_json(answer_json_path, answer_template_payload)
 
-def render_grouped_level_map(progress_rows: List[Dict[str, str]], awaiting_run: Optional[Path]) -> None:
-    grouped: Dict[str, List[Dict[str, str]]] = {key: [] for key, _, _ in V3_HOME_GROUPS}
-    for row in progress_rows:
-        grouped.setdefault(v3_home_group_for_topic(row.get("topic_id", "")), []).append(row)
+    practice_exercise = get_exercise_for_topic(topic.topic_id)
+    practice_submission_template = build_practice_submission_template(topic.topic_id)
+    practice_exercise_path = None
+    practice_submission_path = None
+    if practice_exercise is not None and practice_submission_template is not None:
+        practice_exercise_path = f"runs/{run_id}/practice_exercise.json"
+        practice_submission_path = f"assessments/answers/{run_id}_practice_submission.json"
+        write_json(practice_exercise_path, practice_exercise)
+        write_json(practice_submission_path, practice_submission_template)
+        write_log(run_id, f"Practice coding exercise attached: {practice_exercise['exercise_id']}")
 
-    for key, title, caption in V3_HOME_GROUPS:
-        rows = grouped.get(key, [])
-        if not rows:
-            continue
-        with st.expander(title, expanded=(key in {"agentic", "ml"})):
-            st.caption(caption)
-            cols_per_row = 3
-            for i in range(0, len(rows), cols_per_row):
-                cols = st.columns(cols_per_row)
-                for j, row in enumerate(rows[i:i + cols_per_row]):
-                    with cols[j]:
-                        render_level_card(row, st.session_state.selected_topic_id, rewards_state)
-                        render_topic_action_buttons(row, awaiting_run)
+    write_log(run_id, "Assessment and answer templates generated")
 
-
-def render_latest_evaluation_panel() -> None:
-    eval_run = get_latest_evaluation_run()
-    if eval_run is None:
-        st.info("No completed evaluation yet.")
-        return
-
-    state = load_json(eval_run / "run_state.json")
-    evaluation_path = eval_run / "evaluation.json"
-    if not evaluation_path.exists():
-        st.warning("Latest evaluation run exists, but evaluation.json is missing.")
-        return
-
-    evaluation = load_json(evaluation_path)
-    history_entry = get_history_entry_for_run(state["run_id"])
-    reward_summary = (history_entry or {}).get("reward_summary", {})
-
-    decision = evaluation.get("decision", "unknown")
-    if decision == "pass":
-        st.success(f"Latest Result: PASS . {state['topic_id']} . {state['topic_name']}")
-    elif decision == "borderline":
-        st.warning(f"Latest Result: BORDERLINE . {state['topic_id']} . {state['topic_name']}")
-    else:
-        st.error(f"Latest Result: {decision.upper()} . {state['topic_id']} . {state['topic_name']}")
-
-    render_score_cards(evaluation)
-
-    reward_c1, reward_c2, reward_c3 = st.columns(3)
-    reward_c1.metric("Stars Earned", reward_summary.get("stars_earned", "-"))
-    reward_c2.metric("XP Earned", reward_summary.get("xp_earned", "-"))
-    reward_c3.metric("Total XP", reward_summary.get("total_xp", "-"))
-
-    badges = reward_summary.get("badges_awarded", []) or []
-    if badges:
-        st.markdown("**Badges Awarded**")
-        for badge in badges:
-            st.markdown(f"- {badge['label']} . {badge['description']}")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Strengths**")
-        for item in evaluation.get("strengths", []):
-            st.markdown(f"- {item}")
-
-    with col2:
-        st.markdown("**Weak Spots**")
-        for item in evaluation.get("weak_spots", []):
-            st.markdown(f"- {item}")
-
-    render_answer_coaching_panel(eval_run)
-    render_practice_coaching_panel(eval_run)
-
-    st.markdown("**Decision Reason**")
-    st.write(evaluation.get("decision_reason", ""))
-
-    st.markdown("**Refined Explanation**")
-    st.write(evaluation.get("refined_explanation", ""))
-
-    st.markdown("**Refined Architect Summary**")
-    st.write(evaluation.get("refined_architect_summary", ""))
-
-    unlocked_topics = []
-    if history_entry:
-        unlocked_topics = history_entry.get("unlocked_topics", []) or []
-
-    if unlocked_topics:
-        st.markdown("**Unlocked Next**")
-        st.write(", ".join(unlocked_topics))
-
-    st.markdown("**Next Action**")
-    st.write(evaluation.get("next_action", "-"))
-
-
-def is_playable_status(status: str) -> bool:
-    return status in {"not_started", "unlocked", "needs_attention", "in_progress", "borderline", "revise", "completed"}
-
-
-# -----------------------------
-# Streamlit page
-# -----------------------------
-st.set_page_config(page_title="ML Architect Learning OS", layout="wide")
-inject_theme()
-require_login()
-
-st.markdown('<div class="main-title">ML Architect Learning OS</div>', unsafe_allow_html=True)
-st.markdown(
-    '<div class="sub-title">Level up topic by topic. Track mastery, weak spots, rewards, and architect readiness.</div>',
-    unsafe_allow_html=True,
-)
-render_session_heartbeat()
-
-cloud_repair_summary = repair_cloud_state_on_startup()
-if cloud_repair_summary.get("error"):
-    st.warning(f"Cloud state repair warning: {cloud_repair_summary['error']}")
-
-progress_rows = load_progress_tracker()
-rewards_state = load_rewards_state()
-catalog_source, catalog_count = load_topic_catalog_source()
-metrics = compute_overall_metrics(progress_rows, rewards_state)
-
-# Supabase is the system of record. Streamlit Cloud local files are only cache.
-# Rehydrate active/evaluation runs before local run discovery so sleep/redeploy
-# does not make the app forget an in-progress lesson.
-sync_active_run_from_supabase(progress_rows)
-sync_latest_evaluation_from_supabase()
-
-awaiting_run = find_latest_run("awaiting_user_answers")
-stale_awaiting_run = None
-if is_stale_awaiting_run(awaiting_run, progress_rows, rewards_state):
-    stale_awaiting_run = awaiting_run
-    awaiting_run = None
-
-latest_eval_run = get_latest_evaluation_run()
-latest_run = find_latest_run()
-if stale_awaiting_run is not None and latest_run == stale_awaiting_run and latest_eval_run is not None:
-    latest_run = latest_eval_run
-
-if "selected_topic_id" not in st.session_state:
-    st.session_state.selected_topic_id = None
-
-top_c1, top_c2, top_c3, top_c4, top_c5, top_c6 = st.columns(6)
-top_c1.metric("Completed Levels", metrics["completed"])
-top_c2.metric("Unlocked", metrics["unlocked"])
-top_c3.metric("Needs Attention", metrics["needs_attention"])
-top_c4.metric("Avg Score", metrics["overall_avg"] if metrics["overall_avg"] is not None else "-")
-top_c5.metric("Total XP", rewards_state.get("total_xp", 0))
-top_c6.metric("Badges", len(rewards_state.get("badges_unlocked", [])))
-
-if awaiting_run is not None:
-    active_state = load_json(awaiting_run / "run_state.json")
-    st.warning(f"Active lesson in progress . {active_state['topic_id']} . Finish active lesson first.")
-elif stale_awaiting_run is not None:
-    stale_state = load_json(stale_awaiting_run / "run_state.json")
-    st.info(
-        f"Ignored stale active run for mastered topic . {stale_state.get('topic_id')} . "
-        "V2.3 will continue from the real repair queue."
+    final_run_state = RunState(
+        run_id=run_id,
+        topic_id=topic.topic_id,
+        topic_name=topic.title,
+        phase="awaiting_user_answers",
+        status="in_progress",
+        prerequisites=topic.prerequisites,
+        artifacts=RunArtifacts(
+            concept_note=f"runs/{run_id}/concept_note.json",
+            architect_note=f"runs/{run_id}/architect_note.json",
+            assessment=f"runs/{run_id}/assessment.json",
+            answers=answer_json_path,
+            practice_exercise=practice_exercise_path,
+            practice_submission=practice_submission_path,
+        ),
+        scores=RunScores(),
+        next_action="await_user_answers",
     )
 
-action_c1, action_c2 = st.columns([1, 1])
+    final_run_state_payload = final_run_state.to_dict()
+    final_run_state_payload["selection_mode"] = selected.selection_mode
+    final_run_state_payload["redo_mode"] = selected.selection_mode == "retry"
+    if selected.selection_mode == "retry":
+        final_run_state_payload["next_action"] = "await_user_answers"
+        final_run_state_payload["redo_notice"] = "Redo attempt for a previously completed topic. Existing progress and rewards history are not erased."
+    write_json(f"runs/{run_id}/run_state.json", final_run_state_payload)
 
-with action_c1:
-    if st.button(
-        "Start Next Lesson",
-        use_container_width=True,
-        disabled=awaiting_run is not None,
-    ):
-        with st.spinner("Starting next lesson..."):
-            ok, output = start_lesson_for_topic(None)
-        record_action_result("Start Next Lesson", ok, output)
-        if ok:
-            st.rerun()
+    try:
+        persist_lesson_start_to_supabase(
+            run_id=run_id,
+            topic=topic,
+            final_run_state=final_run_state_payload,
+            selected=selected,
+            concept_note=concept_note,
+            architect_note=architect_note,
+            assessment=assessment,
+            answer_template=answer_template_payload,
+            practice_exercise=practice_exercise,
+            practice_submission_template=practice_submission_template,
+        )
+        if learning_design:
+            upsert_artifact(run_id, "learning_design", topic.topic_id, payload=learning_design)
+        elif has_blueprint(topic.topic_id):
+            upsert_artifact(run_id, "lesson_blueprint", topic.topic_id, payload=blueprint_context(topic.topic_id))
+        write_log(run_id, "Supabase persistence completed for lesson start.")
+    except Exception as exc:
+        write_log(run_id, f"Supabase lesson-start persistence failed but local lesson remains available: {exc}")
 
-with action_c2:
-    if st.button("Evaluate Current Lesson", use_container_width=True):
-        if awaiting_run is None:
-            st.warning("No lesson is currently awaiting answers.")
-        else:
-            with st.spinner("Evaluating current lesson. This can take a little time..."):
-                ok, output = run_module("src.evaluate_lesson")
-            record_action_result("Evaluate Current Lesson", ok, output)
-            if ok:
-                st.rerun()
-
-if latest_run:
-    state = load_json(latest_run / "run_state.json")
-    st.caption(
-        f"Latest run: {state.get('run_id')} | topic: {state.get('topic_id')} | phase: {state.get('phase')} | status: {state.get('status')}"
+    append_jsonl(
+        "data/run_history.jsonl",
+        {
+            "run_id": run_id,
+            "timestamp": utc_now_iso(),
+            "topic_id": topic.topic_id,
+            "topic_title": topic.title,
+            "selection_mode": selected.selection_mode,
+            "phase": "awaiting_user_answers",
+            "status": "in_progress",
+            "next_action": "await_user_answers",
+        },
     )
-st.caption(f"Curriculum source: {catalog_source} . topics: {catalog_count}")
 
-render_last_action_result()
-
-tabs = st.tabs(
-    [
-        "🏠 Home",
-        "🎮 Current Level",
-        "📊 Last Evaluation",
-        "📈 Trajectory",
-        "📚 Notes Vault",
-        "🧾 Run Details",
-        "🏆 Rewards",
-        "🔁 Review / Redo",
-    ]
-)
-
-# -----------------------------
-# HOME TAB
-# -----------------------------
-with tabs[0]:
-    st.subheader("Level Map")
-    st.caption("V3 flow: onion AI architect path + ML repair queue. Normal lessons use scored MCQs plus one short written answer; checkpoints/capstone stay deeper.")
-
-    if not progress_rows:
-        st.warning("No progress tracker found.")
-    else:
-        render_grouped_level_map(progress_rows, awaiting_run)
-
-    st.divider()
-    st.subheader("Latest Result")
-    render_latest_evaluation_panel()
-
-# -----------------------------
-# CURRENT LEVEL TAB
-# -----------------------------
-with tabs[1]:
-    if awaiting_run is None:
-        st.info("No active lesson. Start the next available level from Home.")
-    else:
-        run_state = load_json(awaiting_run / "run_state.json")
-        topic_id = run_state["topic_id"]
-
-        concept_note = load_json(awaiting_run / "concept_note.json")
-        architect_note = load_json(awaiting_run / "architect_note.json")
-        assessment_doc = load_json(awaiting_run / "assessment.json")
-        visible_assessment_doc = filter_assessment_doc_for_v3(topic_id, assessment_doc)
-
-        answer_path = PROJECT_ROOT / run_state["artifacts"]["answers"]
-        answers_doc = load_json(answer_path)
-
-        visible_answer_items_for_header = filter_written_answer_items(topic_id, answers_doc.get("answers", []))
-        mission_types = sorted({item.get("type", "evidence") for item in visible_answer_items_for_header})
-        render_topic_hero(run_state, concept_note, mission_types)
-
-        learning_design = load_topic_learning_design(topic_id)
-        booster = build_lesson_booster(topic_id, concept_note, architect_note, visible_assessment_doc)
-
-        artifacts = run_state.get("artifacts", {}) or {}
-        practice_exercise = load_relative_json_or_none(artifacts.get("practice_exercise"))
-        practice_submission_path = None
-        practice_submission = None
-        updated_practice_submission = None
-
-        current_tabs = ["① Learn", "② Check It", "③ Scored MCQs", "④ Evidence + Verify"]
-        if practice_exercise is not None:
-            current_tabs.append("⑤ Code Lab")
-            submit_tab_label = "⑥ Submit"
-        else:
-            submit_tab_label = "⑤ Submit"
-        current_tabs.append(submit_tab_label)
-        lesson_tabs = st.tabs(current_tabs)
-
-        with lesson_tabs[0]:
-            if not render_learning_design_panel(topic_id):
-                if not render_tutor_narrative_panel(topic_id):
-                    render_learning_brief(concept_note, architect_note)
-            render_topic_resources_panel(topic_id)
-
-        with lesson_tabs[1]:
-            render_booster_walkthrough(booster)
-
-        with lesson_tabs[2]:
-            render_pre_mission_mcqs(topic_id, booster, awaiting_run=awaiting_run, run_state=run_state)
-
-        updated_answers = {
-            "topic_id": answers_doc["topic_id"],
-            "status": "pending_user_answers",
-            "answers": [],
-        }
-
-        with lesson_tabs[3]:
-            st.markdown("### Evidence Responses")
-            st.caption("Answer only what each task asks. Normal lessons use different evidence tasks, not a repeated essay formula.")
-            render_mission_bridge(booster, visible_assessment_doc)
-            st.divider()
-
-            visible_answer_items = filter_written_answer_items(topic_id, answers_doc.get("answers", []))
-            hidden_count = max(0, len(answers_doc.get("answers", [])) - len(visible_answer_items))
-            if hidden_count:
-                st.info(
-                    f"V3 evaluation uses {len(visible_answer_items)} short written response(s) for this lesson. "
-                    f"{hidden_count} old essay task(s) from the previous run template are hidden."
-                )
-
-            for i, item in enumerate(visible_answer_items, start=1):
-                task_meta = _runtime_task_meta(learning_design, item)
-                mission_type = (task_meta or {}).get("label") or item.get("type", "evidence").replace("_", " ").title()
-                st.markdown(
-                    f"""
-                    <div class="mission-card">
-                        <div class="mission-card-title">Task {i} . {html_text(mission_type)}</div>
-                        <div class="mission-question">{html_text(item['question'])}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                if task_meta and task_meta.get("purpose"):
-                    st.caption(str(task_meta.get("purpose")))
-                max_words = int((task_meta or {}).get("target_max_words", 105))
-                answer_text = st.text_area(
-                    label=f"Answer for {item['question_id']}",
-                    value=item.get("answer", ""),
-                    height=105 if max_words <= 100 else 135,
-                    key=f"{run_state['run_id']}_{item['question_id']}",
-                    label_visibility="collapsed",
-                )
-                render_answer_pressure(item.get("type", "mission"), answer_text, task_meta)
-                render_writing_assist_panel(item.get("type", "mission"), answer_text, task_meta)
-                updated_answers["answers"].append(
-                    {
-                        "question_id": item["question_id"],
-                        "type": item["type"],
-                        "question": item["question"],
-                        "answer": answer_text,
-                    }
-                )
-
-            st.markdown("### Save + Verify Evidence")
-            st.caption("Save and Verify stay here so your response work is protected before final evaluation.")
-            action_c1, action_c2 = st.columns([1, 1])
-            with action_c1:
-                if st.button("Save Answers", use_container_width=True):
-                    save_answers(answer_path, updated_answers)
-                    persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
-                    st.success("Mission answers saved locally and to Supabase.")
-            with action_c2:
-                if st.button("Verify Draft", use_container_width=True):
-                    try:
-                        run_draft_verification_action(
-                            awaiting_run=awaiting_run,
-                            run_state=run_state,
-                            topic_id=topic_id,
-                            concept_note=concept_note,
-                            architect_note=architect_note,
-                            assessment_doc=visible_assessment_doc,
-                            answer_path=answer_path,
-                            updated_answers=updated_answers,
-                        )
-                        st.success("Draft verified. No stronger sample answers shown before final evaluation.")
-                    except Exception as exc:
-                        st.error(f"Draft verification failed: {exc}")
-
-            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"], topic_id)
-            if verification_to_show:
-                st.divider()
-                render_draft_verification_panel(verification_to_show)
-
-        if practice_exercise is not None:
-            practice_tab_index = 4
-            submit_tab_index = 5
-            with lesson_tabs[practice_tab_index]:
-                practice_submission_rel = artifacts.get("practice_submission")
-                practice_submission_path = PROJECT_ROOT / practice_submission_rel if practice_submission_rel else awaiting_run / "practice_submission.json"
-                practice_submission = load_relative_json_or_none(practice_submission_rel) or {
-                    "topic_id": practice_exercise.get("topic_id"),
-                    "exercise_id": practice_exercise.get("exercise_id"),
-                    "status": "pending_user_submission",
-                    "code": practice_exercise.get("starter_code", ""),
-                    "interpretation": "",
-                }
-
-                st.markdown("### Code Lab")
-                st.caption("First understand what the function represents. Then write the code and explain the result.")
-                concept_bridge = practice_exercise.get("concept_bridge", "")
-                if concept_bridge:
-                    render_static_card("Why This Function Exists", concept_bridge, "callout-good")
-                worked_code_example = practice_exercise.get("worked_code_example", "")
-                if worked_code_example:
-                    with st.expander("Small example before coding", expanded=True):
-                        st.write(worked_code_example)
-                render_static_card(practice_exercise.get("title", "Practice Exercise"), practice_exercise.get("prompt", ""))
-
-                code_text = st.text_area(
-                    "Code submission",
-                    value=practice_submission.get("code", practice_exercise.get("starter_code", "")),
-                    height=260,
-                    key=f"{run_state['run_id']}_practice_code",
-                )
-                st.markdown("#### Practical interpretation")
-                st.caption(practice_exercise.get("interpretation_prompt", "Explain what the result means."))
-                interpretation_focus = practice_exercise.get("expected_interpretation_focus", []) or []
-                if interpretation_focus:
-                    st.markdown("**Your explanation must cover:** " + " · ".join(str(item) for item in interpretation_focus))
-                interpretation_text = st.text_area(
-                    "Practical interpretation response",
-                    value=practice_submission.get("interpretation", ""),
-                    height=135,
-                    key=f"{run_state['run_id']}_practice_interpretation",
-                    label_visibility="collapsed",
-                )
-
-                updated_practice_submission = {
-                    "topic_id": practice_exercise.get("topic_id"),
-                    "exercise_id": practice_exercise.get("exercise_id"),
-                    "status": "pending_evaluation",
-                    "code": code_text,
-                    "interpretation": interpretation_text,
-                }
-
-                if st.button("Run Code Exercise", use_container_width=True):
-                    save_answers(practice_submission_path, updated_practice_submission)
-                    result = run_code_exercise(practice_exercise, updated_practice_submission)
-                    persist_practice_submission_to_supabase(run_state, topic_id, updated_practice_submission, result)
-                    render_practice_result_summary(result)
-        else:
-            submit_tab_index = 4
-
-        with lesson_tabs[submit_tab_index]:
-            st.markdown("### Submit Final Attempt")
-            st.markdown(
-                """
-                <div class="save-panel">
-                    <div class="mission-card-title">Final submission</div>
-                    <div class="small-muted">Save and Verify Draft are in the Missions tab. Use this only when you are ready to lock the attempt for evaluation.</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            if practice_exercise is not None:
-                st.info("Code Lab, if present, is separate practical evidence and is included in final evaluation. Run it before submitting.")
-
-            if st.button("Save + Evaluate", use_container_width=True):
-                save_answers(answer_path, updated_answers)
-                persist_mission_draft_to_supabase(run_state, topic_id, updated_answers)
-                try:
-                    persist_mcq_submission(
-                        awaiting_run=awaiting_run,
-                        run_state=run_state,
-                        topic_id=topic_id,
-                        mcqs=booster.get("mcqs", []) or [],
-                    )
-                except Exception as exc:
-                    st.warning(f"MCQ submission could not be saved before evaluation: {exc}")
-                if updated_practice_submission is not None and practice_submission_path is not None:
-                    save_answers(practice_submission_path, updated_practice_submission)
-                    persist_practice_submission_to_supabase(run_state, topic_id, updated_practice_submission)
-                with st.spinner("Saving answers, running practical checks, and evaluating mission responses. This finalizes this attempt..."):
-                    ok, output = run_module("src.evaluate_lesson")
-                record_action_result("Save + Evaluate", ok, output)
-                if ok:
-                    st.session_state.pop("draft_verification", None)
-                    st.session_state.pop("draft_verification_run_id", None)
-                    st.rerun()
-
-            verification_to_show = get_draft_verification_to_show(awaiting_run, run_state["run_id"], topic_id)
-            if verification_to_show:
-                st.divider()
-                st.caption("Latest draft verification from Missions tab")
-                render_draft_verification_panel(verification_to_show)
+    print(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "topic_id": topic.topic_id,
+                "selection_mode": selected.selection_mode,
+                "phase": "awaiting_user_answers",
+                "next_action": "await_user_answers",
+                "answer_template": answer_json_path,
+            },
+            indent=2,
+        )
+    )
 
 
-
-# -----------------------------
-# LAST EVALUATION TAB
-# -----------------------------
-with tabs[2]:
-    st.subheader("Last Evaluation")
-    if latest_eval_run is None:
-        st.info("No completed evaluation yet.")
-    else:
-        render_latest_evaluation_panel()
-
-
-# -----------------------------
-# TRAJECTORY TAB
-# -----------------------------
-with tabs[3]:
-    st.subheader("Trajectory")
-
-    history = load_run_history()
-    eval_history = [row for row in history if row.get("phase") == "evaluation_complete"]
-
-    if not eval_history:
-        st.info("No evaluation history yet.")
-    else:
-        summary_rows = []
-        for row in progress_rows:
-            avg_score = compute_topic_average_score(row)
-            topic_reward = get_topic_reward_state(rewards_state, row["topic_id"])
-            summary_rows.append(
-                {
-                    "topic_id": row["topic_id"],
-                    "title": row["title"],
-                    "status": row["status"],
-                    "stars": compute_display_stars(row, rewards_state),
-                    "attempts": row["attempt_count"],
-                    "latest_avg_score": round(avg_score, 2) if avg_score is not None else None,
-                    "best_stars": topic_reward.get("best_stars", 0),
-                    "last_badges": ", ".join(topic_reward.get("last_badges", [])),
-                }
-            )
-
-        st.markdown("### Topic Progress")
-        st.dataframe(summary_rows, use_container_width=True)
-
-        latest_five = eval_history[-5:]
-        st.markdown("### Recent Evaluation Trail")
-        st.dataframe(latest_five, use_container_width=True)
-
-# -----------------------------
-# NOTES VAULT TAB
-# -----------------------------
-with tabs[4]:
-    st.subheader("Notes Vault")
-
-    selected_topic_id = st.session_state.selected_topic_id
-    if not selected_topic_id:
-        if latest_eval_run is not None:
-            selected_topic_id = load_json(latest_eval_run / "run_state.json")["topic_id"]
-        elif awaiting_run is not None:
-            selected_topic_id = load_json(awaiting_run / "run_state.json")["topic_id"]
-
-    if not selected_topic_id:
-        st.info("No topic selected yet.")
-    else:
-        st.caption(f"Selected topic: {selected_topic_id}")
-
-        concept_file = find_note_file(NOTES_DIR / "concepts", selected_topic_id)
-        architect_file = find_note_file(NOTES_DIR / "architect_lens", selected_topic_id)
-        refined_file = find_note_file(NOTES_DIR / "refined", selected_topic_id)
-        eval_file = find_note_file(ASSESSMENTS_DIR / "evaluations", selected_topic_id)
-        coaching_file = find_note_file(ASSESSMENTS_DIR / "evaluations", f"{selected_topic_id}_answer_coaching")
-
-        sub_tabs = st.tabs(["Concept", "Architect", "Refined", "Evaluation", "Answer Coaching"])
-
-        with sub_tabs[0]:
-            if concept_file:
-                st.markdown(load_text(concept_file))
-            else:
-                st.info("No concept note found.")
-
-        with sub_tabs[1]:
-            if architect_file:
-                st.markdown(load_text(architect_file))
-            else:
-                st.info("No architect note found.")
-
-        with sub_tabs[2]:
-            if refined_file:
-                st.markdown(load_text(refined_file))
-            else:
-                st.info("No refined note found.")
-
-        with sub_tabs[3]:
-            if eval_file:
-                st.markdown(load_text(eval_file))
-            else:
-                st.info("No evaluation note found.")
-        
-        with sub_tabs[4]:
-            if coaching_file:
-                st.markdown(load_text(coaching_file))
-            else:
-                st.info("No answer coaching note found.")
-
-# -----------------------------
-# RUN DETAILS TAB
-# -----------------------------
-with tabs[5]:
-    st.subheader("Run Details")
-    st.caption("Use this tab to inspect what happened after hosted Streamlit actions. These files live in the app runtime, not automatically in GitHub.")
-    render_last_action_result()
-    render_run_details()
-
-
-# -----------------------------
-# REWARDS TAB
-# -----------------------------
-with tabs[6]:
-    st.subheader("Rewards")
-    st.caption("XP now uses best completed attempt per topic. Revise/fail attempts earn 0 XP. Retry XP is added only if the retry beats the previous best completed attempt.")
-
-    streaks = rewards_state.get("streaks", {})
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total XP", rewards_state.get("total_xp", 0))
-    c2.metric("Current Streak", streaks.get("current_completion_streak", 0))
-    c3.metric("Best Streak", streaks.get("best_completion_streak", 0))
-
-    badges = rewards_state.get("badges_unlocked", [])
-    st.markdown("### Badge Cabinet")
-    if not badges:
-        st.info("No badges unlocked yet.")
-    else:
-        for badge in badges:
-            label = badge_to_label(badge)
-            description = badge_to_description(badge)
-            if description:
-                st.markdown(f"- **{label}** . {description}")
-            else:
-                st.markdown(f"- **{label}**")
-
-    reward_history = rewards_state.get("history", [])
-    st.markdown("### Recent Rewards")
-    if not reward_history:
-        st.info("No reward history yet.")
-    else:
-        st.dataframe(reward_history_display_rows(reward_history[-10:]), use_container_width=True)
-
-
-# -----------------------------
-# REVIEW / REDO TAB
-# -----------------------------
-with tabs[7]:
-    render_review_redo_tab(progress_rows, awaiting_run, rewards_state)
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1)
