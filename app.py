@@ -439,35 +439,77 @@ def topic_status_map(progress_rows: List[Dict[str, str]]) -> Dict[str, str]:
     return {str(row.get("topic_id", "")): str(row.get("status", "")) for row in progress_rows}
 
 
+def latest_evaluation_run_id_for_topic(topic_id: str) -> Optional[str]:
+    """Return the newest finalized local/cache run for one topic.
+
+    Run IDs begin with ``YYYYMMDD_HHMMSS``, so lexical comparison is safe.
+    Supabase evaluation runs are materialized locally before this helper is
+    used by the active-run selector.
+    """
+    if not RUNS_DIR.exists() or not topic_id:
+        return None
+
+    finalized_run_ids: List[str] = []
+
+    for run_dir in RUNS_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+
+        state_path = run_dir / "run_state.json"
+        if not state_path.exists():
+            continue
+
+        try:
+            state = load_json(state_path)
+        except Exception:
+            continue
+
+        if str(state.get("topic_id") or "").strip() != topic_id:
+            continue
+
+        if str(state.get("phase") or "").strip() != "evaluation_complete":
+            continue
+
+        finalized_run_ids.append(str(state.get("run_id") or run_dir.name))
+
+    return max(finalized_run_ids) if finalized_run_ids else None
+
+
 def is_stale_awaiting_run(
     run_dir: Optional[Path],
     progress_rows: List[Dict[str, str]],
     rewards_state: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """Ignore active run cache when durable mastery says the topic is already done.
+    """Ignore an awaiting run only when a newer final run supersedes it.
 
-    V2.3 rule: best mastery wins. A stale local awaiting run for a topic that
-    already has best_stars >= 3 must not hijack the Current Level screen.
-    A genuine active repair for a topic below mastery is still allowed.
+    Historical mastery must not hide a deliberately started repair or redo.
+    A current ``in_progress`` run remains resumable even when an older attempt
+    already earned three stars. It is stale only when a later evaluation for
+    the same topic has already finalized.
     """
     if run_dir is None:
         return False
+
     try:
         state = load_json(run_dir / "run_state.json")
     except Exception:
         return False
-    topic_id = str(state.get("topic_id") or "")
-    phase = str(state.get("phase") or "")
-    if phase != "awaiting_user_answers" or not topic_id:
+
+    topic_id = str(state.get("topic_id") or "").strip()
+    phase = str(state.get("phase") or "").strip()
+    status = str(state.get("status") or "").strip().lower()
+    current_run_id = str(state.get("run_id") or run_dir.name)
+
+    if not topic_id or phase != "awaiting_user_answers":
         return False
 
-    row = next((r for r in progress_rows if str(r.get("topic_id") or "") == topic_id), None)
-    if row and v23_is_mastered(row, rewards_state):
-        return True
+    if status == "in_progress":
+        latest_final_run_id = latest_evaluation_run_id_for_topic(topic_id)
+        return bool(latest_final_run_id and latest_final_run_id > current_run_id)
 
-    # Older logic fallback for legacy rows without best_stars/reward state.
-    return topic_status_map(progress_rows).get(topic_id) == "completed"
-
+    # Defensive cleanup for malformed cache entries that still claim to be in
+    # the awaiting phase even though they are no longer active.
+    return status in {"completed", "abandoned", "cancelled", "expired"}
 
 def get_latest_evaluation_run() -> Optional[Path]:
     local_run = find_latest_run("evaluation_complete")
@@ -550,7 +592,6 @@ def collect_mcq_selections_from_session(run_id: str, topic_id: str, mcqs: List[D
 
     return selections
 
-
 def persist_mcq_submission(
     *,
     awaiting_run: Path,
@@ -559,12 +600,12 @@ def persist_mcq_submission(
     mcqs: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     payload = build_mcq_submission_payload(
-    topic_id=topic_id,
-    run_id=run_state["run_id"],
-    mcqs=mcqs,
-    selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
-    seed_context=run_state["run_id"],
-)
+        topic_id=topic_id,
+        run_id=run_state["run_id"],
+        mcqs=mcqs,
+        selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
+        seed_context=run_state["run_id"],
+    )
     save_answers(mcq_submission_path(awaiting_run), payload)
     try:
         upsert_artifact(
@@ -582,7 +623,6 @@ def persist_mcq_submission(
     except Exception:
         pass
     return payload
-
 
 def load_mcq_submission(awaiting_run: Path) -> Optional[Dict[str, Any]]:
     path = mcq_submission_path(awaiting_run)
@@ -2110,6 +2150,7 @@ def render_pre_mission_mcqs(
                 st.warning(
                     f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%)."
                 )
+
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
 
