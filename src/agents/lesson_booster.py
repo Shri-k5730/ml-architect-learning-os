@@ -5,8 +5,8 @@ from typing import Any, Dict, List
 from src.agents.mcq_quality import get_quality_mcqs
 from src.blueprints.advanced_ml import blueprint_to_booster
 from src.blueprints.tutor_experience import get_application_drill
-from src.blueprints.learning_design import get_bundled_learning_design, design_to_booster
-from src.utils.supabase_store import fetch_topic_learning_design
+from src.blueprints.learning_design import design_to_booster
+from src.utils.learning_design_registry import resolve_learning_design
 
 
 # Study Booster is a deterministic, copy-safe learning layer.
@@ -467,7 +467,7 @@ def _mission_bridge_from_questions(booster: Dict[str, Any], questions: List[Dict
 def build_lesson_booster(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> Dict[str, Any]:
     """Return copy-safe pre-mission support aligned to final missions."""
     title = concept_note.get("title", topic_id)
-    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    learning_design = resolve_learning_design(topic_id)
     if learning_design:
         authored = design_to_booster(learning_design)
         questions = assessment_doc.get("questions", []) or []

@@ -59,3 +59,15 @@ feedback_rules:
   allow_polite_padding: false
   refine_explanation_on_revise: true
   refine_architect_summary_on_revise: true
+
+v4_normal_lesson_policy:
+  source_of_truth: topic_learning_design.written_rubric
+  written_scoring: deterministic_published_rubric
+  hidden_criteria_allowed: false
+  essay_length_is_not_a_content_score: true
+  llm_final_grader_for_authored_agentic_topics: false
+  note: >
+    For V4 authored agentic normal lessons, the YAML dimensions remain display
+    dimensions only. Mastery is decided by the published MCQ gate plus the
+    published written-rubric criteria. Checkpoints, capstone and legacy topics
+    without a written_rubric retain the existing evaluator path.

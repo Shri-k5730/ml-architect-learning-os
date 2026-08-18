@@ -1,0 +1,21 @@
+MLOS V4 validation report
+Date: 2026-08-17
+
+Checks completed:
+- python -m compileall -q app.py src tests : PASS
+- PYTHONPATH=/mnt/data/mlos_fixed_repo pytest -q : 11 passed
+- AIA_004 previous answer rubric check : mechanism PASS, example PASS, risk PASS, control PASS
+- AIA_004 previous answer deterministic decision : PASS
+- AIA_004 previous answer Practical Reasoning : 4
+- Agentic authored topics : 10
+- Authored MCQs per Agentic topic : 10
+- Total authored Agentic MCQs : 100
+- Longest-option strategy test : correct option uniquely longest in <=20% of source items
+- Per-run answer-position balance test : PASS
+- Generic V3 MCQ padding removed
+- Active-run repair safety fix retained
+- Supabase history is not rewritten by V4 migration
+
+Important:
+Run supabase/sql/040_v4_deterministic_agentic_assessment.sql after deploying the code.
+Do not run destructive cleanup SQL against historical runs.

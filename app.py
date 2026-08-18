@@ -25,18 +25,19 @@ from src.agents.draft_verifier import verify_draft_answers
 from src.agents.lesson_booster import build_lesson_booster
 from src.agents.writing_assist import analyze_answer_text
 from src.agents.tutor_narrative import get_tutor_narrative
-from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
+from src.blueprints.learning_design import runtime_task_for_question
 from src.schemas import ArchitectNote, Assessment, ConceptNote
 from src.utils.validator import build_dataclass
-from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources, fetch_topic_learning_design
+from src.utils.supabase_store import append_event, upsert_artifact, get_supabase_client, fetch_run_artifacts, fetch_topic_resources
 from src.utils.cloud_run_cache import sync_active_run_from_supabase, sync_latest_evaluation_from_supabase
 from src.utils.v23_mastery_policy import display_status as v23_display_status, needs_repair as v23_needs_repair, is_mastered as v23_is_mastered
-from src.utils.v23_tutor_quality import enhance_learning_design
+from src.utils.learning_design_registry import resolve_learning_design
 from src.utils.v3_assessment_policy import (
     build_mcq_submission_payload,
     explain_contract,
     filter_assessment_questions,
     filter_written_answer_items,
+    mcq_bank_fingerprint,
     normalize_mcq_items,
     score_mcq_submission,
     written_task_limit,
@@ -439,35 +440,77 @@ def topic_status_map(progress_rows: List[Dict[str, str]]) -> Dict[str, str]:
     return {str(row.get("topic_id", "")): str(row.get("status", "")) for row in progress_rows}
 
 
+def latest_evaluation_run_id_for_topic(topic_id: str) -> Optional[str]:
+    """Return the newest finalized local/cache run for one topic.
+
+    Run IDs begin with ``YYYYMMDD_HHMMSS``, so lexical comparison is safe.
+    Supabase evaluation runs are materialized locally before this helper is
+    used by the active-run selector.
+    """
+    if not RUNS_DIR.exists() or not topic_id:
+        return None
+
+    finalized_run_ids: List[str] = []
+
+    for run_dir in RUNS_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+
+        state_path = run_dir / "run_state.json"
+        if not state_path.exists():
+            continue
+
+        try:
+            state = load_json(state_path)
+        except Exception:
+            continue
+
+        if str(state.get("topic_id") or "").strip() != topic_id:
+            continue
+
+        if str(state.get("phase") or "").strip() != "evaluation_complete":
+            continue
+
+        finalized_run_ids.append(str(state.get("run_id") or run_dir.name))
+
+    return max(finalized_run_ids) if finalized_run_ids else None
+
+
 def is_stale_awaiting_run(
     run_dir: Optional[Path],
     progress_rows: List[Dict[str, str]],
     rewards_state: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """Ignore active run cache when durable mastery says the topic is already done.
+    """Ignore an awaiting run only when a newer final run supersedes it.
 
-    V2.3 rule: best mastery wins. A stale local awaiting run for a topic that
-    already has best_stars >= 3 must not hijack the Current Level screen.
-    A genuine active repair for a topic below mastery is still allowed.
+    Historical mastery must not hide a deliberately started repair or redo.
+    A current ``in_progress`` run remains resumable even when an older attempt
+    already earned three stars. It is stale only when a later evaluation for
+    the same topic has already finalized.
     """
     if run_dir is None:
         return False
+
     try:
         state = load_json(run_dir / "run_state.json")
     except Exception:
         return False
-    topic_id = str(state.get("topic_id") or "")
-    phase = str(state.get("phase") or "")
-    if phase != "awaiting_user_answers" or not topic_id:
+
+    topic_id = str(state.get("topic_id") or "").strip()
+    phase = str(state.get("phase") or "").strip()
+    status = str(state.get("status") or "").strip().lower()
+    current_run_id = str(state.get("run_id") or run_dir.name)
+
+    if not topic_id or phase != "awaiting_user_answers":
         return False
 
-    row = next((r for r in progress_rows if str(r.get("topic_id") or "") == topic_id), None)
-    if row and v23_is_mastered(row, rewards_state):
-        return True
+    if status == "in_progress":
+        latest_final_run_id = latest_evaluation_run_id_for_topic(topic_id)
+        return bool(latest_final_run_id and latest_final_run_id > current_run_id)
 
-    # Older logic fallback for legacy rows without best_stars/reward state.
-    return topic_status_map(progress_rows).get(topic_id) == "completed"
-
+    # Defensive cleanup for malformed cache entries that still claim to be in
+    # the awaiting phase even though they are no longer active.
+    return status in {"completed", "abandoned", "cancelled", "expired"}
 
 def get_latest_evaluation_run() -> Optional[Path]:
     local_run = find_latest_run("evaluation_complete")
@@ -542,12 +585,13 @@ def mcq_submission_path(awaiting_run: Path) -> Path:
 
 def collect_mcq_selections_from_session(run_id: str, topic_id: str, mcqs: List[Dict[str, Any]]) -> Dict[str, Any]:
     selections: Dict[str, Any] = {}
-    for idx, item in enumerate(normalize_mcq_items(mcqs), start=1):
+
+    for idx, item in enumerate(normalize_mcq_items(mcqs, seed_context=run_id), start=1):
         qid = str(item.get("id") or f"mcq_{idx:02d}")
         key = f"{run_id}_{topic_id}_mcq_{idx}"
         selections[qid] = st.session_state.get(key)
-    return selections
 
+    return selections
 
 def persist_mcq_submission(
     *,
@@ -561,6 +605,7 @@ def persist_mcq_submission(
         run_id=run_state["run_id"],
         mcqs=mcqs,
         selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
+        seed_context=run_state["run_id"],
     )
     save_answers(mcq_submission_path(awaiting_run), payload)
     try:
@@ -579,7 +624,6 @@ def persist_mcq_submission(
     except Exception:
         pass
     return payload
-
 
 def load_mcq_submission(awaiting_run: Path) -> Optional[Dict[str, Any]]:
     path = mcq_submission_path(awaiting_run)
@@ -675,6 +719,7 @@ def _artifact_payload_map_from_local(run_id: str) -> Dict[str, Any]:
         "evaluation": run_dir / "evaluation.json",
         "answer_coaching": run_dir / "answer_coaching.json",
         "practice_result": run_dir / "practice_result.json",
+        "written_rubric_evidence": run_dir / "written_rubric_evidence.json",
         "capstone_deliverables": run_dir / "capstone_deliverables.json",
     }
     for artifact_type, file_path in local_files.items():
@@ -727,12 +772,41 @@ def _format_run_option(row: Dict[str, Any]) -> str:
     return f"{created} · {status} · {phase} · {run_id}"
 
 
+def render_written_rubric_evidence_panel(audit: Optional[Dict[str, Any]]) -> None:
+    if not audit:
+        return
+
+    st.markdown("### Written Rubric Evidence")
+    st.caption(
+        "Deterministic V4 grading. Only the published lesson criteria are checked; "
+        "no hidden architecture vocabulary is added."
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Required", f"{audit.get('required_met', 0)}/{audit.get('required_total', 0)}")
+    c2.metric("Bonus", f"{audit.get('bonus_met', 0)}/{audit.get('bonus_total', 0)}")
+    c3.metric("Words", audit.get("word_count", "-"))
+
+    rows = []
+    for item in audit.get("required", []) or []:
+        rows.append(
+            {
+                "criterion": item.get("label"),
+                "result": "PASS" if item.get("matched") else "MISSING",
+                "evidence": item.get("evidence") or "",
+            }
+        )
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+
+
 def render_review_payloads(payloads: Dict[str, Any]) -> None:
     evaluation = payloads.get("evaluation") or {}
     answers_doc = payloads.get("answers") or payloads.get("answer_template") or {}
     coaching_doc = payloads.get("answer_coaching") or {}
     concept_note = payloads.get("concept_note") or {}
     architect_note = payloads.get("architect_note") or {}
+    written_rubric_evidence = payloads.get("written_rubric_evidence") or {}
 
     if evaluation:
         st.markdown("### Evaluation")
@@ -759,6 +833,10 @@ def render_review_payloads(payloads: Dict[str, Any]) -> None:
             st.info(evaluation.get("refined_architect_summary"))
     else:
         st.info("No final evaluation found for this run yet.")
+
+    if written_rubric_evidence:
+        st.divider()
+        render_written_rubric_evidence_panel(written_rubric_evidence)
 
     st.divider()
     st.markdown("### Answers + Coaching")
@@ -1722,7 +1800,7 @@ def load_topic_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
 
     V2.3 enhances shallow designs at runtime so tutor depth matches assessment depth.
     """
-    return enhance_learning_design(fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id))
+    return resolve_learning_design(topic_id)
 
 
 def render_learning_design_panel(topic_id: str) -> bool:
@@ -1983,7 +2061,8 @@ def render_pre_mission_mcqs(
     awaiting_run: Optional[Path] = None,
     run_state: Optional[Dict[str, Any]] = None,
 ) -> None:
-    mcqs = normalize_mcq_items(booster.get("mcqs", []) or [])
+    seed_context = str((run_state or {}).get("run_id") or topic_id or "active")
+    mcqs = normalize_mcq_items(booster.get("mcqs", []) or [], seed_context=seed_context)
     contract = explain_contract(topic_id)
 
     st.markdown("### Scored MCQs")
@@ -1996,56 +2075,86 @@ def render_pre_mission_mcqs(
     previous = load_mcq_submission(awaiting_run) if awaiting_run is not None else None
     previous_selections = (previous or {}).get("selections", {}) if isinstance(previous, dict) else {}
 
+    # A deployed content upgrade may replace the MCQ bank while an old repair
+    # run is still active. Never map old selections onto new questions merely
+    # because the IDs happen to be mcq_01..mcq_10.
+    current_fingerprint = mcq_bank_fingerprint(booster.get("mcqs", []) or [])
+    previous_fingerprint = str((previous or {}).get("bank_fingerprint") or "") if isinstance(previous, dict) else ""
+    if previous and previous_fingerprint != current_fingerprint:
+        previous_selections = {}
+        for reset_idx in range(1, len(mcqs) + 1):
+            st.session_state.pop(f"{seed_context}_{topic_id}_mcq_{reset_idx}", None)
+        st.info("This lesson's MCQ bank was upgraded. Previous MCQ selections for this active attempt were reset.")
+
     for idx, item in enumerate(mcqs, start=1):
         qid = str(item.get("id") or f"mcq_{idx:02d}")
-        qkey = f"{(run_state or {}).get('run_id', 'active')}_{topic_id}_mcq_{idx}"
+        qkey = f"{seed_context}_{topic_id}_mcq_{idx}"
         kind = str(item.get("kind", "Check"))
         title = _format_mcq_title(kind, idx, str(item.get("question", "")))
+
         with st.expander(title, expanded=(idx == 1)):
             options = item.get("options", []) or []
+            option_ids = item.get("option_ids", []) or [f"opt_{i}" for i in range(len(options))]
+            option_text_by_id = {
+                oid: options[i]
+                for i, oid in enumerate(option_ids)
+                if i < len(options)
+            }
+
             default_value = previous_selections.get(qid)
-            radio_values = [None] + list(range(len(options)))
-            try:
-                default_index = radio_values.index(int(default_value)) if default_value is not None else 0
-            except Exception:
-                default_index = 0
+            radio_values = [None] + list(option_ids)
+            default_index = radio_values.index(default_value) if default_value in radio_values else 0
 
             selected = st.radio(
                 label=f"Select answer for check {idx}",
                 options=radio_values,
                 index=default_index,
-                format_func=lambda i, opts=options: "Select an answer..." if i is None else opts[i],
+                format_func=lambda oid, mapping=option_text_by_id: (
+                    "Select an answer..." if oid is None else mapping.get(oid, str(oid))
+                ),
                 key=qkey,
                 label_visibility="collapsed",
             )
-            correct_index = int(item.get("answer_index", -1))
+
+            correct_option_id = str(item.get("correct_option_id") or "")
             option_explanations = item.get("option_explanations", []) or []
+
             if st.button(f"Check answer {idx}", key=f"{qkey}_btn", use_container_width=True):
                 if selected is None:
                     st.warning("Select an answer first.")
-                elif selected == correct_index:
+                elif selected == correct_option_id:
                     st.success("Correct. " + str(item.get("explanation", "")))
                 else:
                     st.error("Not quite.")
-                    if isinstance(selected, int) and selected < len(option_explanations) and option_explanations[selected]:
-                        st.warning(str(option_explanations[selected]))
+                    try:
+                        selected_index = option_ids.index(selected)
+                    except Exception:
+                        selected_index = -1
+
+                    if 0 <= selected_index < len(option_explanations) and option_explanations[selected_index]:
+                        st.warning(str(option_explanations[selected_index]))
                     else:
                         st.caption("This option misses the topic-specific mechanism. Re-read the tutor narrative and try again.")
+
                     st.caption("The correct option is intentionally not shown. Fix the reasoning, not the guess.")
 
     st.divider()
     st.markdown("#### Save MCQ evidence")
-    st.caption("These MCQs now count. Save them before final evaluation. V3.4 scores the exact MCQs displayed in this run. Answer all displayed MCQs, reach 70%+, and clear critical checks.")
+    st.caption(
+        "These MCQs count. Save them before final evaluation. V4 balances answer positions per run and scores stable option IDs. Answer all displayed MCQs, reach 70%+, and clear critical checks."
+    )
 
-    current_result = None
     if run_state is not None:
         current_payload = build_mcq_submission_payload(
             topic_id=topic_id,
             run_id=run_state["run_id"],
             mcqs=mcqs,
             selections=collect_mcq_selections_from_session(run_state["run_id"], topic_id, mcqs),
+            seed_context=run_state["run_id"],
         )
+
         current_result = current_payload.get("result", {})
+
         c1, c2, c3 = st.columns(3)
         c1.metric("Answered", f"{current_result.get('answered', 0)}/{current_result.get('total', 0)}")
         c2.metric("MCQ Score", f"{current_result.get('score_pct', 0)}%")
@@ -2059,13 +2168,17 @@ def render_pre_mission_mcqs(
                 topic_id=topic_id,
                 mcqs=mcqs,
             )
+
             result = payload.get("result", {})
+
             if result.get("passed"):
-                st.success(f"MCQ gate passed: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
+                st.success(
+                    f"MCQ gate passed: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%)."
+                )
             else:
-                st.warning(f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%).")
-                if result.get("total", 0) > 0 and not result.get("critical_failed") and result.get("score_pct", 0) >= 70:
-                    st.caption("If this still fails, refresh the page and evaluate again. V3.4 prevents double-shuffling between display and scoring.")
+                st.warning(
+                    f"MCQ gate not passed yet: {result.get('correct')}/{result.get('total')} ({result.get('score_pct')}%)."
+                )
 
 def render_lesson_booster_panel(topic_id: str, concept_note: Dict[str, Any], architect_note: Dict[str, Any], assessment_doc: Dict[str, Any]) -> None:
     booster = build_lesson_booster(topic_id, concept_note, architect_note, assessment_doc)
@@ -2307,6 +2420,10 @@ def render_latest_evaluation_panel() -> None:
 
     render_score_cards(evaluation)
 
+    rubric_path = eval_run / "written_rubric_evidence.json"
+    if rubric_path.exists():
+        render_written_rubric_evidence_panel(load_json(rubric_path))
+
     reward_c1, reward_c2, reward_c3 = st.columns(3)
     reward_c1.metric("Stars Earned", reward_summary.get("stars_earned", "-"))
     reward_c2.metric("XP Earned", reward_summary.get("xp_earned", "-"))
@@ -2433,15 +2550,10 @@ with action_c1:
             st.rerun()
 
 with action_c2:
-    if st.button("Evaluate Current Lesson", use_container_width=True):
-        if awaiting_run is None:
-            st.warning("No lesson is currently awaiting answers.")
-        else:
-            with st.spinner("Evaluating current lesson. This can take a little time..."):
-                ok, output = run_module("src.evaluate_lesson")
-            record_action_result("Evaluate Current Lesson", ok, output)
-            if ok:
-                st.rerun()
+    if awaiting_run is not None:
+        st.caption("Use Current Level → Submit → Save + Evaluate so the saved written response and current MCQ bank are evaluated together.")
+    else:
+        st.caption("Evaluation becomes available inside the active lesson after you start or resume a level.")
 
 if latest_run:
     state = load_json(latest_run / "run_state.json")

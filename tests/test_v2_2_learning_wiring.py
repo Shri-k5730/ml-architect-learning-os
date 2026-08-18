@@ -18,6 +18,6 @@ def test_failed_redo_stays_active_and_locks_capstone_dl():
     rows, active = rebuild_v2_progress_state(progress_rows=progress, topic_catalog_rows=catalog, latest_evaluation={"topic_id": "mlf_001", "status": "revise", "next_action": "retry_same_topic"})
     by_id = {row["topic_id"]: row for row in rows}
     assert active == "mlf_001"
-    assert by_id["mlf_001"]["status"] == "revise"
+    assert by_id["mlf_001"]["status"] == "needs_attention"
     assert by_id["capstone_ml_architect_001"]["status"] == "locked"
     assert by_id["dl_001"]["status"] == "locked"

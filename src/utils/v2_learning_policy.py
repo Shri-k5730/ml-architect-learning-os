@@ -78,6 +78,16 @@ def capstone_mastered(progress_rows: Iterable[Dict[str, Any]]) -> bool:
     )
 
 
+def capstone_effectively_mastered(progress_rows: Iterable[Dict[str, Any]]) -> bool:
+    """Capstone mastery counts only while its prerequisite mastery remains valid."""
+    rows = list(progress_rows)
+    return (
+        all_ml_lessons_mastered(rows)
+        and checkpoint_architect_mastered(rows)
+        and capstone_mastered(rows)
+    )
+
+
 def should_complete_from_visible_gate(
     topic_id: str,
     scores: Dict[str, Any],
@@ -97,7 +107,7 @@ def classify_progress_row(row: Dict[str, Any], progress_rows: List[Dict[str, Any
     topic_id = str(row.get("topic_id", ""))
 
     if is_dl_topic(topic_id):
-        if not capstone_mastered(progress_rows):
+        if not capstone_effectively_mastered(progress_rows):
             return "locked"
         return "completed" if is_mastered(row) else ("needs_attention" if has_attempt(row) else "unlocked" if topic_id == "dl_001" else "locked")
 
@@ -112,6 +122,11 @@ def classify_progress_row(row: Dict[str, Any], progress_rows: List[Dict[str, Any
         if has_attempt(row):
             return "needs_attention"
         return "unlocked" if topic_id == "mlf_001" else "locked"
+
+    if topic_id == "checkpoint_ml_architect_001":
+        if not all_ml_lessons_mastered(progress_rows):
+            return "locked"
+        return "completed" if is_mastered(row) else ("needs_attention" if has_attempt(row) else "unlocked")
 
     if topic_id.startswith("checkpoint_"):
         return "completed" if is_mastered(row) else ("needs_attention" if has_attempt(row) else "locked")
@@ -144,4 +159,4 @@ def select_active_topic(progress_rows: List[Dict[str, Any]], latest_evaluation: 
 
 
 def normal_lesson_contract() -> Dict[str, int]:
-    return {"mcq_count": 10, "written_evidence_tasks": 2, "minimum_core_score": 3}
+    return {"mcq_count": 10, "written_evidence_tasks": 1, "minimum_core_score": 3}

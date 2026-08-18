@@ -16,8 +16,8 @@ from src.schemas import (
 )
 from src.utils.validator import ValidationError, build_dataclass
 from src.blueprints.advanced_ml import blueprint_context
-from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
-from src.utils.supabase_store import fetch_topic_learning_design
+from src.blueprints.learning_design import runtime_task_for_question
+from src.utils.learning_design_registry import resolve_learning_design
 from src.agents.writing_assist import analyze_answer_text
 
 
@@ -66,7 +66,7 @@ def build_evaluator_refiner_payload(
         "learning_goal": learner_profile.get("learning_goal", ""),
         "priority_contexts": learner_profile.get("priority_contexts", []),
     }
-    learning_design = fetch_topic_learning_design(concept_note.topic_id) or get_bundled_learning_design(concept_note.topic_id)
+    learning_design = resolve_learning_design(concept_note.topic_id)
     if learning_design:
         runtime_design = dict(learning_design)
         runtime_design["evidence_tasks"] = [

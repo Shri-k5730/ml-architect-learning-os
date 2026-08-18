@@ -6,8 +6,8 @@ from typing import Any, Dict, List
 from src.agents.topic_coaching_profiles import get_topic_coaching_profile
 from src.agents.writing_assist import analyze_answer_text
 from src.schemas import ArchitectNote, Assessment, ConceptNote
-from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
-from src.utils.supabase_store import fetch_topic_learning_design
+from src.blueprints.learning_design import runtime_task_for_question
+from src.utils.learning_design_registry import resolve_learning_design
 
 
 def _normalize(text: str) -> str:
@@ -319,7 +319,7 @@ def verify_draft_answers(
     by_question = {item.get("question_id"): item for item in answers_doc.get("answers", [])}
     items: List[Dict[str, Any]] = []
     profile = get_topic_coaching_profile(concept_note.topic_id)
-    learning_design = fetch_topic_learning_design(concept_note.topic_id) or get_bundled_learning_design(concept_note.topic_id)
+    learning_design = resolve_learning_design(concept_note.topic_id)
 
     for question in assessment.questions:
         answer = str(by_question.get(question.question_id, {}).get("answer", "")).strip()

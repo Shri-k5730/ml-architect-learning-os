@@ -38,8 +38,8 @@ from src.utils.v3_assessment_policy import (
     filter_assessment_questions,
     score_mcq_submission,
 )
-from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
-from src.utils.supabase_store import fetch_topic_learning_design
+from src.utils.learning_design_registry import resolve_learning_design
+from src.utils.deterministic_written_evaluator import build_deterministic_evaluation
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +66,7 @@ def persist_evaluation_to_supabase(
     language_noise: List[Dict[str, Any]] | None = None,
     capstone_deliverables: Dict[str, Any] | None = None,
     mcq_submission: Dict[str, Any] | None = None,
+    written_rubric_evidence: Dict[str, Any] | None = None,
 ) -> None:
     upsert_run(
         run_id=run_id,
@@ -155,6 +156,14 @@ def persist_evaluation_to_supabase(
             artifact_type="mcq_submission",
             topic_id=topic_id,
             payload=mcq_submission,
+        )
+
+    if written_rubric_evidence is not None:
+        upsert_artifact(
+            run_id=run_id,
+            artifact_type="written_rubric_evidence",
+            topic_id=topic_id,
+            payload=written_rubric_evidence,
         )
 
     upsert_state(
@@ -299,27 +308,42 @@ def load_optional_json(relative_path: str | None) -> Dict[str, Any] | None:
 
 
 def load_mcq_submission(run_dir: Path, topic_id: str) -> Dict[str, Any] | None:
-    """Load and rescore a saved V3 MCQ submission.
-
-    The UI persists selections to runs/<run_id>/mcq_submission.json. Evaluation
-    rescoring here makes the gate deterministic and independent of UI state.
+    """Load and rescore a saved V4 MCQ submission.\n\n    V4 scoring rule: evaluate the exact MCQs displayed and saved for this
+    run. Do not rebuild/shuffle from Supabase during evaluation, because that
+    can change answer order and corrupt the result.
     """
     path = run_dir / "mcq_submission.json"
+
     if not path.exists():
         return None
+
     try:
         payload = load_json(path)
+
         if not isinstance(payload, dict):
             return None
-        learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
-        mcqs = (learning_design or {}).get("knowledge_checks", []) or []
+
+        mcqs = payload.get("items") if isinstance(payload.get("items"), list) else None
+
+        if not mcqs:
+            learning_design = resolve_learning_design(topic_id)
+            mcqs = (learning_design or {}).get("knowledge_checks", []) or []
+
         selections = payload.get("selections", {}) or {}
-        payload["result"] = score_mcq_submission(topic_id=topic_id, mcqs=mcqs, selections=selections)
+        seed_context = str(payload.get("seed_context") or run_dir.name)
+
+        payload["result"] = score_mcq_submission(
+            topic_id=topic_id,
+            mcqs=mcqs,
+            selections=selections,
+            seed_context=seed_context,
+        )
+
         write_json(f"runs/{run_dir.name}/mcq_submission.json", payload)
         return payload
+
     except Exception:
         return None
-
 
 def filter_assessment_for_v3(topic_id: str, assessment: Assessment) -> Assessment:
     questions = filter_assessment_questions(topic_id, assessment.questions)
@@ -655,21 +679,35 @@ def main() -> None:
     if practice_exercise is not None and practice_result is not None:
         practice_coaching = build_practice_coaching(practice_exercise, practice_result)
 
-    evaluator_llm_callable = build_llm_callable("evaluator_refiner")
+    learning_design = resolve_learning_design(topic_id)
+    written_rubric_evidence = None
+    evaluator_llm_callable = None
 
-    evaluator_payload = build_evaluator_refiner_payload(
-        concept_note=concept_note,
-        architect_note=architect_note,
-        assessment=assessment,
-        user_answers=user_answers,
-        scoring_rubric=scoring_rubric,
-        learner_profile=learner_profile,
-        practice_exercise=practice_exercise,
-        practice_submission=practice_submission,
-        practice_result=practice_result,
-        mcq_result=mcq_result,
-    )
-    evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
+    if learning_design and learning_design.get("written_rubric"):
+        # V4 normal agentic lessons are graded against the published rubric.
+        # The LLM is intentionally not allowed to invent or omit criteria.
+        evaluation, written_rubric_evidence = build_deterministic_evaluation(
+            learning_design=learning_design,
+            user_answers=user_answers,
+            mcq_result=mcq_result,
+        )
+        write_log(run_id, "Written response evaluated with deterministic published rubric.")
+    else:
+        evaluator_llm_callable = build_llm_callable("evaluator_refiner")
+        evaluator_payload = build_evaluator_refiner_payload(
+            concept_note=concept_note,
+            architect_note=architect_note,
+            assessment=assessment,
+            user_answers=user_answers,
+            scoring_rubric=scoring_rubric,
+            learner_profile=learner_profile,
+            practice_exercise=practice_exercise,
+            practice_submission=practice_submission,
+            practice_result=practice_result,
+            mcq_result=mcq_result,
+        )
+        evaluation = evaluate_and_refine(evaluator_payload, evaluator_llm_callable)
+
     evaluation = apply_mcq_gate_to_evaluation(evaluation, mcq_result, topic_id)
     evaluation = apply_practice_gate_to_evaluation(evaluation, practice_result)
     evaluation, language_noise = sanitize_evaluation_language_noise(evaluation, user_answers)
@@ -707,6 +745,8 @@ def main() -> None:
         write_json(f"runs/{run_id}/capstone_deliverables.json", capstone_deliverables)
 
     write_json(f"runs/{run_id}/evaluation.json", evaluation)
+    if written_rubric_evidence is not None:
+        write_json(f"runs/{run_id}/written_rubric_evidence.json", written_rubric_evidence)
 
     if answer_coaching is not None:
         write_json(f"runs/{run_id}/answer_coaching.json", answer_coaching)
@@ -829,6 +869,7 @@ topic_id: {topic_id}
             "practice_result": f"runs/{run_id}/practice_result.json" if practice_result is not None else None,
             "practice_coaching": f"runs/{run_id}/practice_coaching.json" if practice_coaching is not None else None,
             "mcq_submission": f"runs/{run_id}/mcq_submission.json" if mcq_submission is not None else None,
+            "written_rubric_evidence": f"runs/{run_id}/written_rubric_evidence.json" if written_rubric_evidence is not None else None,
             "capstone_deliverables": f"runs/{run_id}/capstone_deliverables.json" if capstone_deliverables is not None else None,
         },
         "scores": {
@@ -858,6 +899,7 @@ topic_id: {topic_id}
             language_noise=language_noise,
             capstone_deliverables=capstone_deliverables,
             mcq_submission=mcq_submission,
+            written_rubric_evidence=written_rubric_evidence,
         )
         write_log(run_id, "Supabase persistence completed for evaluation.")
     except Exception as exc:

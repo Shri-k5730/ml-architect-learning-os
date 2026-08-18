@@ -8,8 +8,9 @@ from src.agents.topic_coaching_profiles import (
     profile_golden_answer,
 )
 from src.blueprints.advanced_ml import get_blueprint
-from src.blueprints.learning_design import get_bundled_learning_design, runtime_task_for_question
-from src.utils.supabase_store import fetch_topic_learning_design
+from src.blueprints.learning_design import runtime_task_for_question
+from src.utils.learning_design_registry import resolve_learning_design
+from src.utils.deterministic_written_evaluator import evaluate_rubric_evidence
 from src.utils.v23_tutor_quality import sample_answer_for_task
 from src.schemas import (
     ArchitectNote,
@@ -327,9 +328,18 @@ def _missing_points(
     question: str = "",
 ) -> tuple[List[str], List[Dict[str, str]]]:
     missing: List[str] = []
-    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    learning_design = resolve_learning_design(topic_id)
 
-    if not learning_design:
+    # V4 normal agentic lessons use the published deterministic rubric. Coaching
+    # must therefore report the same missing evidence as the evaluator.
+    if learning_design and learning_design.get("written_rubric"):
+        audit = evaluate_rubric_evidence(learning_design, answer)
+        for item in audit.get("required", []) or []:
+            if not item.get("matched"):
+                missing.append(
+                    f"{item.get('label')}: {item.get('description')}"
+                )
+    elif not learning_design:
         for gap in _expected_focus_gaps(expected_focus, answer):
             if gap not in missing:
                 missing.append(gap)
@@ -352,7 +362,6 @@ def _missing_points(
     misconceptions.extend(exact_findings)
 
     return missing[:5], misconceptions[:5]
-
 
 def _join(items: List[str], limit: int = 4) -> str:
     return "; ".join(str(item) for item in (items or [])[:limit] if str(item).strip())
@@ -580,7 +589,7 @@ def _better_answer(
     architect_note: ArchitectNote,
     question_id: str = "",
 ) -> str:
-    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    learning_design = resolve_learning_design(topic_id)
     sample = sample_answer_for_task(learning_design, question_id)
     if sample:
         return sample
@@ -602,7 +611,14 @@ def _why_better(question_type: str) -> str:
 
 
 def _five_star_upgrade(question_type: str, topic_id: str, question_id: str = "", question: str = "") -> str:
-    learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+    learning_design = resolve_learning_design(topic_id)
+    if learning_design and learning_design.get("written_rubric"):
+        bonus = learning_design.get("written_rubric", {}).get("bonus", []) or []
+        labels = [str(item.get("label")) for item in bonus if item.get("label")]
+        if labels:
+            return "To strengthen this response further, add only relevant published bonus evidence: " + ", ".join(labels) + "."
+        return "The published required evidence is sufficient for mastery. Add detail only when it improves the scenario reasoning."
+
     evidence_task = runtime_task_for_question(learning_design, question_id, question) if learning_design else None
     if evidence_task:
         return "To strengthen this response, demonstrate the task evidence precisely: " + str(evidence_task.get("response_shape", "answer the question directly."))
@@ -620,8 +636,15 @@ def _five_star_upgrade(question_type: str, topic_id: str, question_id: str = "",
         return "To move from 4 to 5, make the analogy simpler and close with the business consequence."
     return "To move from 4 to 5, state the mechanism precisely and demonstrate the requested evidence."
 
-
 def _architect_upgrade(question_type: str, architect_note: ArchitectNote) -> str:
+    learning_design = resolve_learning_design(architect_note.topic_id)
+    if learning_design and learning_design.get("written_rubric"):
+        bonus = learning_design.get("written_rubric", {}).get("bonus", []) or []
+        labels = [str(item.get("label")) for item in bonus if item.get("label")]
+        if labels:
+            return "Architect upgrade: add only scenario-relevant operating detail from the published rubric, such as " + ", ".join(labels) + "."
+        return str(learning_design.get("architect_extension") or architect_note.interview_framing)
+
     if architect_note.topic_id == "mlf_019" and question_type == "tiny_hands_on":
         return "Upgrade by checking inference-time availability, leakage, proxy risk, stability across segments and domain evidence before trusting humidity operationally."
     if architect_note.topic_id == "mlf_019" and question_type == "architect_decision":
@@ -635,7 +658,6 @@ def _architect_upgrade(question_type: str, architect_note: ArchitectNote) -> str
     if question_type == "teachback":
         return "Upgrade by explaining the business consequence in one concrete manufacturing, monitoring, or quality example."
     return architect_note.interview_framing or "Upgrade the answer by tying the concept to evaluation, deployment risk, and monitoring decisions."
-
 
 def generate_answer_coaching(
     concept_note: ConceptNote,
@@ -693,6 +715,6 @@ def generate_answer_coaching(
 
     return {
         "topic_id": concept_note.topic_id,
-        "mode": "topic_specific_evidence_coaching_v4" if (fetch_topic_learning_design(concept_note.topic_id) or get_bundled_learning_design(concept_note.topic_id)) else "contract_aligned_semantic_coaching_v3",
+        "mode": "topic_specific_evidence_coaching_v4" if (resolve_learning_design(concept_note.topic_id)) else "contract_aligned_semantic_coaching_v3",
         "coaching": coaching,
     }

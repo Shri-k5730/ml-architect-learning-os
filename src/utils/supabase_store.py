@@ -293,10 +293,8 @@ def fetch_topic_learning_design(topic_id: str) -> Optional[Dict[str, Any]]:
         payload = rows[0].get("learning_design") if rows else None
         if not isinstance(payload, dict):
             return None
-        try:
-            from src.utils.v23_tutor_quality import enhance_learning_design
-            return enhance_learning_design(payload)
-        except Exception:
-            return payload
+        # Runtime enrichment is centralized in learning_design_registry so every
+        # component sees the same design version exactly once.
+        return payload
     except Exception:
         return None

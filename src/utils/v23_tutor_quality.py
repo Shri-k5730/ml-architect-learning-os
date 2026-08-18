@@ -425,88 +425,51 @@ def _enhance_tasks(design: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _normalize_v3_knowledge_checks(design: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Make existing MCQs usable as scored V3 checks."""
+    """Normalize authored MCQs without manufacturing giveaway filler.
+
+    V3 previously padded short banks to ten with generic questions whose correct
+    option was often obviously longer and more detailed. V4 prefers fewer
+    authored questions to low-quality synthetic distractors. Agentic V4 lessons
+    ship ten authored questions each.
+    """
     checks: List[Dict[str, Any]] = []
     for idx, raw in enumerate(design.get("knowledge_checks", []) or [], start=1):
         if not isinstance(raw, dict):
             continue
         item = deepcopy(raw)
+        options = list(item.get("options") or [])
+        try:
+            answer_index = int(item.get("answer_index", -1))
+        except Exception:
+            answer_index = -1
+        if len(options) < 2 or answer_index < 0 or answer_index >= len(options):
+            continue
+
         item["id"] = str(item.get("id") or item.get("question_id") or f"mcq_{idx:02d}")
         item["kind"] = str(item.get("kind") or ("Critical" if idx <= 3 else "Scenario"))
         item["is_critical"] = bool(item.get("is_critical", idx <= 3))
-        options = list(item.get("options") or [])
         option_explanations = list(item.get("option_explanations") or [])
         if len(option_explanations) < len(options):
-            option_explanations.extend(["Review the concept mechanism and the worked example." for _ in range(len(options) - len(option_explanations))])
+            option_explanations.extend(
+                ["Re-check the topic-specific mechanism and scenario evidence."
+                 for _ in range(len(options) - len(option_explanations))]
+            )
         item["option_explanations"] = option_explanations
         checks.append(item)
 
-    # Older bundled lessons sometimes have fewer than 10 checks. Add concept-safe
-    # non-trick scenario checks rather than leaving the MCQ gate impossible.
-    title = _clean(design.get("title")) or "this topic"
-    objective = _clean(design.get("learning_objective")) or f"understand {title}"
-    misconception = _clean(design.get("misconception")) or "Treating the concept as vocabulary instead of a decision risk."
-    architect = _clean(design.get("architect_extension")) or "Connect the concept to evidence, owner, trigger, and action."
-
-    while len(checks) < 10:
-        idx = len(checks) + 1
-        if idx % 3 == 1:
-            question = f"What is the safest practical interpretation of {title}?"
-            options = [
-                objective,
-                "It guarantees the model is correct in production.",
-                "It only matters for UI design.",
-                "It removes the need for validation.",
-            ]
-            answer_index = 0
-            explanation = "The correct option states the concept mechanism and decision boundary."
-        elif idx % 3 == 2:
-            question = f"Which answer is unsafe for {title}?"
-            options = [
-                misconception,
-                "Validate against deployment-like evidence.",
-                "Name the owner of the operating decision.",
-                "Monitor the agreed production signal.",
-            ]
-            answer_index = 0
-            explanation = "The unsafe option is the common wrong mental model."
-        else:
-            question = f"What makes this architect-level rather than a definition?"
-            options = [
-                architect,
-                "Using more jargon.",
-                "Writing a longer essay.",
-                "Ignoring the production decision.",
-            ]
-            answer_index = 0
-            explanation = "Architecture fluency means converting the concept into operating evidence and control."
-
-        checks.append(
-            {
-                "id": f"mcq_{idx:02d}",
-                "kind": "Scenario",
-                "is_critical": idx <= 3,
-                "question": question,
-                "options": options,
-                "answer_index": answer_index,
-                "explanation": explanation,
-                "option_explanations": [
-                    explanation,
-                    "This is overclaiming. The concept does not remove production evidence.",
-                    "This distracts from ML behavior.",
-                    "This removes the evidence/control boundary the lesson is teaching.",
-                ],
-            }
-        )
-
-    return checks[:10]
-
+    return checks
 
 def enhance_learning_design(learning_design: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not isinstance(learning_design, dict) or not learning_design:
         return learning_design
 
     design = deepcopy(learning_design)
+
+    # V4 deterministic designs are already fully authored. Re-running the old
+    # generic enhancer would overwrite their MCQ and rubric contracts.
+    if str(design.get("assessment_mode") or "").startswith("v4_deterministic") or design.get("written_rubric"):
+        return design
+
     design = _apply_author_override(design)
 
     # Do not skip older v2_3 rows from Supabase. They may contain the generic tutor text that V2.4 is replacing.

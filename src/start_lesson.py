@@ -31,7 +31,8 @@ from src.schemas import (
 )
 from src.utils.llm_client import build_llm_callable
 from src.utils.repo_writer import append_jsonl, write_json, write_markdown
-from src.utils.supabase_store import append_event, upsert_artifact, upsert_run, fetch_topic_learning_design
+from src.utils.supabase_store import append_event, upsert_artifact, upsert_run
+from src.utils.learning_design_registry import resolve_learning_design
 from src.utils.curriculum_catalog import load_topic_catalog_dicts
 from src.utils.tracker import read_progress_rows
 from src.practice.exercise_bank import build_practice_submission_template, get_exercise_for_topic
@@ -42,7 +43,6 @@ from src.checkpoints.checkpoint_bank import (
     is_checkpoint_topic,
 )
 from src.blueprints.learning_design import (
-    get_bundled_learning_design,
     design_to_concept_note,
     design_to_architect_note,
     design_to_assessment,
@@ -337,43 +337,37 @@ def _is_stale_active_run(
     completed_topics: set[str],
     requested_topic_id: Optional[str] = None,
 ) -> bool:
-    """Return True when an old awaiting run should not block a new lesson.
+    """Return True only when an old awaiting run should stop blocking lessons.
 
-    V2.3.3 fix:
-    - progression is controlled by best mastery, not latest stale local run;
-    - a mastered topic's old awaiting run is always stale, even if it was created
-      by a redo/retry path;
-    - when a repair topic is explicitly requested, an old awaiting run for a
-      different topic should be abandoned instead of blocking the repair queue.
-
-    This is the backend counterpart to the UI message: "Ignored stale active run".
-    Without this, the screen can correctly choose mlf_009 while src.start_lesson
-    still blocks on an old mlf_016 folder or Supabase row.
+    A recent repair or redo for a previously completed topic is intentional and
+    must remain active. Completion history must not immediately invalidate it.
     """
     topic_id = str(active_state.get("topic_id") or "").strip()
     phase = str(active_state.get("phase") or "").strip()
     next_action = str(active_state.get("next_action") or "").strip()
+    status = str(active_state.get("status") or "").strip().lower()
     requested = str(requested_topic_id or "").strip()
 
     if not topic_id:
         return False
+
     if phase != "awaiting_user_answers" or next_action != "await_user_answers":
         return False
 
-    # If durable progress already says this topic is mastered/completed, the
-    # active run is stale regardless of redo_mode/selection_mode. A later failed
-    # or abandoned redo must not block the repair queue.
-    if topic_id in completed_topics:
+    if status != "in_progress":
         return True
 
-    # If the user deliberately clicked Repair/Redo for another topic and the
-    # existing awaiting run is old, treat it as stale. This protects Streamlit
-    # Cloud from month-old local run folders and Supabase-materialized runs.
+    # Historical completion does not invalidate a newly created repair/redo.
+    # Clear it only after it has genuinely aged beyond the stale threshold.
+    if topic_id in completed_topics and _is_old_awaiting_run(active_state):
+        return True
+
+    # An old run for another topic may be cleared when the user deliberately
+    # starts a different repair.
     if requested and requested != topic_id and _is_old_awaiting_run(active_state):
         return True
 
     return False
-
 
 def _abandon_stale_active_run(active_run: Path, active_state: Dict[str, Any]) -> None:
     """Mark a stale local active run as abandoned so it stops blocking startup."""
@@ -618,7 +612,7 @@ def main() -> None:
     selected = select_topic(requested_topic_id=requested_topic_id)
     topic = get_topic_by_id(topic_catalog, selected.selected_topic_id)
     run_id = generate_run_id(topic.topic_id)
-    learning_design = fetch_topic_learning_design(topic.topic_id) or get_bundled_learning_design(topic.topic_id)
+    learning_design = resolve_learning_design(topic.topic_id)
 
     run_state = RunState(
         run_id=run_id,
