@@ -2141,11 +2141,7 @@ def render_pre_mission_mcqs(
     st.divider()
     st.markdown("#### Save MCQ evidence")
     st.caption(
-<<<<<<< HEAD
         "These MCQs count. Save them before final evaluation. V4 balances answer positions per run and scores stable option IDs. Answer all displayed MCQs, reach 70%+, and clear critical checks."
-=======
-        "These MCQs now count. Save them before final evaluation. V3.5 balances answer positions per run and scores stable option IDs. Answer all displayed MCQs, reach 70%+, and clear critical checks."
->>>>>>> edbe5fca4925e48155994f08916b614261b3f1f9
     )
 
     if run_state is not None:
