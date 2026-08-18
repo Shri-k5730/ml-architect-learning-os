@@ -308,7 +308,13 @@ def load_optional_json(relative_path: str | None) -> Dict[str, Any] | None:
 
 
 def load_mcq_submission(run_dir: Path, topic_id: str) -> Dict[str, Any] | None:
+<<<<<<< HEAD
     """Load and rescore a saved V4 MCQ submission.\n\n    V4 scoring rule: evaluate the exact MCQs displayed and saved for this
+=======
+    """Load and rescore a saved V3 MCQ submission.
+
+    V3.5 scoring rule: evaluate the exact MCQs displayed and saved for this
+>>>>>>> edbe5fca4925e48155994f08916b614261b3f1f9
     run. Do not rebuild/shuffle from Supabase during evaluation, because that
     can change answer order and corrupt the result.
     """
@@ -326,7 +332,11 @@ def load_mcq_submission(run_dir: Path, topic_id: str) -> Dict[str, Any] | None:
         mcqs = payload.get("items") if isinstance(payload.get("items"), list) else None
 
         if not mcqs:
+<<<<<<< HEAD
             learning_design = resolve_learning_design(topic_id)
+=======
+            learning_design = fetch_topic_learning_design(topic_id) or get_bundled_learning_design(topic_id)
+>>>>>>> edbe5fca4925e48155994f08916b614261b3f1f9
             mcqs = (learning_design or {}).get("knowledge_checks", []) or []
 
         selections = payload.get("selections", {}) or {}

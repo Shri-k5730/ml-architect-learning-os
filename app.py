@@ -2141,7 +2141,11 @@ def render_pre_mission_mcqs(
     st.divider()
     st.markdown("#### Save MCQ evidence")
     st.caption(
+<<<<<<< HEAD
         "These MCQs count. Save them before final evaluation. V4 balances answer positions per run and scores stable option IDs. Answer all displayed MCQs, reach 70%+, and clear critical checks."
+=======
+        "These MCQs now count. Save them before final evaluation. V3.5 balances answer positions per run and scores stable option IDs. Answer all displayed MCQs, reach 70%+, and clear critical checks."
+>>>>>>> edbe5fca4925e48155994f08916b614261b3f1f9
     )
 
     if run_state is not None:
@@ -2159,6 +2163,23 @@ def render_pre_mission_mcqs(
         c1.metric("Answered", f"{current_result.get('answered', 0)}/{current_result.get('total', 0)}")
         c2.metric("MCQ Score", f"{current_result.get('score_pct', 0)}%")
         c3.metric("Gate", "PASS" if current_result.get("passed") else "NOT YET")
+
+        with st.expander("MCQ audit", expanded=False):
+            positions = []
+            for item in mcqs:
+                try:
+                    positions.append(int(item.get("answer_index")))
+                except Exception:
+                    pass
+
+            labels = ["A", "B", "C", "D", "E", "F"]
+            max_options = max([len(item.get("options", [])) for item in mcqs] or [0])
+            distribution = {
+                labels[i]: positions.count(i)
+                for i in range(min(6, max_options))
+            }
+
+            st.caption(f"Correct-answer position distribution for this run: {distribution}")
 
     if awaiting_run is not None and run_state is not None:
         if st.button("Save MCQ Answers", use_container_width=True, type="primary"):
