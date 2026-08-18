@@ -266,12 +266,8 @@ def build_mcq_submission_payload(
     return {
         "topic_id": topic_id,
         "run_id": run_id,
-<<<<<<< HEAD
         "assessment_mode": "v4_stable_mcq_bank",
         "bank_fingerprint": mcq_bank_fingerprint(mcqs),
-=======
-        "assessment_mode": "v3_mcq_first",
->>>>>>> edbe5fca4925e48155994f08916b614261b3f1f9
         "seed_context": seed_context,
         "selections": normalized_selections,
         "result": result,
@@ -385,11 +381,7 @@ def score_mcq_submission(
         "critical_failed": critical_failed,
         "wrong": wrong,
         "passed": passed,
-<<<<<<< HEAD
         "policy": "V4: score stable option IDs from the displayed run order. Correct-answer positions are balanced per run and unanswered items cannot pass.",
-=======
-        "policy": "V3.5: score stable option IDs from the displayed run order. Correct-answer positions are balanced per run and unanswered items cannot pass.",
->>>>>>> edbe5fca4925e48155994f08916b614261b3f1f9
     }
 
 
